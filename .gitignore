@@ -16,3 +16,5 @@ out/
 # Operating system
 .DS_Store
 Thumbs.db
+# Editor settings (contain local paths)
+.vscode/
