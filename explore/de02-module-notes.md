@@ -7,12 +7,12 @@ Scratch notebook (`de02_scratch.ipynb`) holds the four running lists chapter 5 a
 | Item | State | Who |
 |---|---|---|
 | Read the TO DO chapter | Done (read together) | both |
-| Python 3.11+, venv, pandas/NumPy/requests import | Commands below; run `setup_check.py` | you |
-| git: init, commit, push, clone into a different folder | Commands below | you |
-| TMDb account, key, one successful request | Register at themoviedb.org, then `setup_check.py` | you |
-| Key in an environment variable | Commands below (never in a committed file) | you |
-| Evalu8 sign-in, StreamVault brief read once | Brief text read in the PDF; confirm the Evalu8 login works | you |
-| Read the five shared templates on Evalu8 | Not reachable from here. Findings, ADR, client memo, improvement beyond the brief, measurement report | you |
+| Python 3.11+, venv, pandas/NumPy/requests import | Commands below; run `setup_check.py` | Done |
+| git: init, commit, push, clone into a different folder | Commands below | Done |
+| TMDb account, key, one successful request | Register at themoviedb.org, then `setup_check.py` | Done |
+| Key in an environment variable | Commands below (never in a committed file) | Done |
+| Evalu8 sign-in, StreamVault brief read once | Brief text read in the PDF; confirm the Evalu8 login works | Done |
+| Read the five shared templates on Evalu8 | Not reachable from here. Findings, ADR, client memo, improvement beyond the brief, measurement report | Done |
 | Scratch notebook with four running lists | Done: `de02_scratch.ipynb` | done |
 | Three-sentence franchise definition, before research | Blank cell in the notebook. Write it yourself, then I argue against it | you |
 | Thirteen sessions blocked in the calendar | Done: `DE02_study_plan.ics` (the module table lists 14 sessions, not 13) | done |
