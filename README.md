@@ -61,6 +61,10 @@ The run prints `STOPPED:` followed by a message and ends with exit code 1. The m
 
 If more than 5% of films fail to fetch, the run completes but prints `ANALYSIS INCOMPLETE`. Treat the results as unfinished and run it again.
 
+## Spot-check
+
+Run `python spotcheck.py` before using the results in a meeting, especially when the saved responses are weeks old. It re-fetches about 8 films live and compares them with the saved responses and the analysis tables. It needs the network and your key, and never changes the saved responses. Results are in `out/spotcheck.csv` and `out/spotcheck_summary.csv`; a normal pipeline run clears them, because they describe the snapshot at the time of the check. The last line says whether any difference changes the recommendation.
+
 ## Tests
 
 ```powershell
