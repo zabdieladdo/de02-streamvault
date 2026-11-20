@@ -29,7 +29,9 @@ Status values: Accepted, Planned (agreed in `de02-final-outline.md`, ADR not yet
 | [ADR-021](ADR-021-talent-signal-over-independent-titles.md) | A director or lead actor signals a title worth licensing only on three or more independent titles, two-thirds of them above the list median | Accepted | 2026-11-20 |
 | [ADR-022](ADR-022-shortlist-by-multiple-with-vote-rank.md) | The shortlist ranks by multiple, shows each pick's vote rank, and names one audience pick | Accepted | 2026-11-20 |
 | [ADR-023](ADR-023-deal-note-relative-value-and-walk-away.md) | The deal note prices relative to the list: median multiple ÷ list median per film, with the weakest film as the walk-away line | Accepted | 2026-11-20 |
+| [ADR-024](ADR-024-zero-money-means-not-reported.md) | A budget or revenue of zero means "not reported", not zero | Accepted | 2026-11-20 |
+| [ADR-025](ADR-025-missing-release-date.md) | A film with no release date is kept, left out of the 2000-onward window, and counted | Accepted | 2026-11-20 |
+| [ADR-026](ADR-026-small-groups.md) | Three films to rank a bundle, five for a group conclusion, and every figure carries its count | Accepted | 2026-11-20 |
+| [ADR-027](ADR-027-window-disagreement-is-reported-first.md) | Disagreement between the two windows is detected by the run and reported first | Accepted | 2026-11-20 |
 | — | No numeric time budget from Evalu8; ours is analysis stage under 10 s at 500 titles, fetch timed separately (D1) | Planned | — |
-| — | Revenue or budget of 0 = missing; flag and exclude per metric (D5) | Planned | — |
 | — | `tt0468569` excluded; id resolver is the improvement beyond the brief (D6) | Planned | — |
-| — | Minimum 3 films to rank a bundle, 5 for a group conclusion (D9) | Planned | — |
