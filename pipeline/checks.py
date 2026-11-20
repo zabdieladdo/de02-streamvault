@@ -89,6 +89,11 @@ def check_load_stage(
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
 
 
+def _failure_text(failed: pd.DataFrame) -> str:
+    """One message naming every failed check, from the check_id and detail columns."""
+    return "; ".join((failed["check_id"].astype(str) + " failed: " + failed["detail"].astype(str)).tolist())
+
+
 def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> None:
     """A conservation check failing means rows were lost or invented; stop the run.
 
@@ -97,10 +102,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
     """
     failed = report[report["check_id"].isin(check_ids) & ~report["passed"]]
     if not failed.empty:
-        raise PipelineStopError(
-            "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples()),
-            check_id=failed["check_id"].iloc[0],
-        )
+        raise PipelineStopError(_failure_text(failed), check_id=failed["check_id"].iloc[0])
 
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
@@ -114,8 +116,7 @@ def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
         report["check_id"].isin(INTEGRITY_CHECKS) & (report["stage"] == stage) & ~report["passed"]
     ]
     if not failed.empty:
-        text = "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples())
-        raise PipelineStopError(text, check_id=failed["check_id"].iloc[0])
+        raise PipelineStopError(_failure_text(failed), check_id=failed["check_id"].iloc[0])
 
 
 def check_fetch_stage(run) -> pd.DataFrame:

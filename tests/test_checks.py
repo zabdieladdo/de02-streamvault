@@ -251,3 +251,27 @@ def test_c31_covers_the_2000_onward_ratios():
     assert not _rank_report_for({**t, "deal_note": wrong_deal}).loc["C-31", "passed"]
     wrong_median = {**t, "ref": {**t["ref"], "list_median_roi_2000_on": t["ref"]["list_median_roi_2000_on"] * 2}}
     assert not _rank_report_for(wrong_median).loc["C-31", "passed"]
+
+
+def test_failure_messages_name_every_failed_check_in_order():
+    report = pd.DataFrame(
+        {"check_id": ["C-22", "C-23", "C-25"], "stage": "measure", "passed": [False, True, False],
+         "detail": ["23 of 24", "ok", "the two runs differ"]}
+    )
+    from pipeline import checks as c
+
+    with pytest.raises(PipelineStopError) as caught:
+        c.raise_if_integrity_failed(report, "measure")
+    assert str(caught.value) == "C-22 failed: 23 of 24; C-25 failed: the two runs differ"
+    assert caught.value.check_id == "C-22"
+    conservation = report.assign(check_id=["C-03", "C-03f", "C-03g"], passed=[False, False, True])
+    with pytest.raises(PipelineStopError) as caught:
+        c.raise_if_conservation_failed(conservation, ("C-03", "C-03f", "C-03g"))
+    assert str(caught.value) == "C-03 failed: 23 of 24; C-03f failed: ok"
+
+
+def test_no_stop_when_every_check_passed():
+    from pipeline import checks as c
+
+    report = pd.DataFrame({"check_id": ["C-22"], "stage": "measure", "passed": [True], "detail": ["fine"]})
+    c.raise_if_integrity_failed(report, "measure")  # no error
