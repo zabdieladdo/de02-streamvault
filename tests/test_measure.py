@@ -40,9 +40,10 @@ def runs_frame():
     rows = []
     for number, wall in enumerate([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], start=1):
         rows.append({"scenario": "s", "size": 127, "run": number, "state": "warm", "wall_s": float(wall),
-                     **{k: wall / 10 for k in measurement.STAGE_KEYS}, "stage_sum_s": wall * 0.6})
+                     **{k: wall / 10 for k in measurement.STAGE_KEYS}, "stage_sum_s": wall * 0.6,
+                     "snapshot_build_s": 0.0})
     rows.append({"scenario": "s", "size": 127, "run": 1, "state": "cold", "wall_s": 20.0,
-                 **{k: 1.0 for k in measurement.STAGE_KEYS}, "stage_sum_s": 6.0})
+                 **{k: 1.0 for k in measurement.STAGE_KEYS}, "stage_sum_s": 6.0, "snapshot_build_s": 0.0})
     return pd.DataFrame(rows, columns=measurement.TIMING_COLUMNS)
 
 
@@ -54,7 +55,7 @@ def test_the_summary_has_median_p95_and_worst_per_scenario_and_metric():
     assert warm["p95_s"] == pytest.approx(9.55) and warm["worst_s"] == 10
     cold = summary[(summary["state"] == "cold") & (summary["metric"] == "wall_s")].iloc[0]
     assert cold["runs"] == 1 and cold["median_s"] == cold["p95_s"] == cold["worst_s"] == 20
-    assert set(summary["metric"]) == {"wall_s", *measurement.STAGE_KEYS, "stage_sum_s"}
+    assert set(summary["metric"]) == {"wall_s", *measurement.STAGE_KEYS, "stage_sum_s", "snapshot_build_s"}
 
 
 def test_the_report_has_one_line_per_scenario():
@@ -73,7 +74,8 @@ def real_copy(tmp_path):
 
 def test_a_measured_run_gives_the_wall_time_and_every_stage_time(real_copy, tmp_path):
     row = measurement.run_once(real_copy, config.INPUT_IDS, tmp_path / "out")
-    assert set(row) == {"wall_s", *measurement.STAGE_KEYS, "stage_sum_s"}
+    assert set(row) == {"wall_s", *measurement.STAGE_KEYS, "stage_sum_s", "snapshot_build_s"}
+    assert row["snapshot_build_s"] >= 0
     assert all(row[k] > 0 for k in measurement.STAGE_KEYS)
     assert row["stage_sum_s"] == pytest.approx(sum(row[k] for k in measurement.STAGE_KEYS))
     assert row["wall_s"] > row["stage_sum_s"]  # start-up and imports sit outside the stages
@@ -87,11 +89,11 @@ def test_a_run_that_would_need_the_network_fails_instead_of_making_a_request(tmp
     assert not (empty / "details").exists()  # nothing was fetched or saved
 
 
-def test_warm_runs_are_all_warm_numbered_and_leave_the_real_snapshot_alone(tmp_path):
+def test_a_warm_series_starts_with_a_warm_up_run_then_warm_runs_and_leaves_the_real_snapshot_alone(tmp_path):
     before = {"raw": tree_hash(REPO / "data" / "raw"), "out": tree_hash(REPO / "out", "*.csv")}
     rows = measurement.warm_runs(tmp_path, runs=2)
     assert [(r["scenario"], r["size"], r["run"], r["state"]) for r in rows] == [
-        ("real snapshot", 127, 1, "warm"), ("real snapshot", 127, 2, "warm"),
+        ("real snapshot", 127, 1, "warm-up"), ("real snapshot", 127, 2, "warm"), ("real snapshot", 127, 3, "warm"),
     ]
     assert tree_hash(REPO / "data" / "raw") == before["raw"]  # bytes, including fetch_log.csv
     assert tree_hash(REPO / "out", "*.csv") == before["out"]
@@ -106,7 +108,7 @@ def test_the_command_writes_the_two_tables_and_never_touches_the_real_outputs(tm
     assert measure.main([*only_warm, "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     summary = pd.read_csv(tmp_path / "result" / "timing_summary.csv")
-    assert list(runs.columns) == measurement.TIMING_COLUMNS and len(runs) == 2
+    assert list(runs.columns) == measurement.TIMING_COLUMNS and len(runs) == 3
     assert list(summary.columns) == measurement.SUMMARY_COLUMNS
     assert "Timing of a full cached run" in capsys.readouterr().out
     assert tree_hash(REPO / "out", "*.csv") == real_out and tree_hash(REPO / "data" / "raw") == real_raw
@@ -122,9 +124,10 @@ def test_the_command_stops_with_a_message_when_a_run_fails(tmp_path, monkeypatch
     assert not (tmp_path / "result").exists()
 
 
-def test_copying_the_snapshot_copies_every_file(tmp_path):
+def test_copying_the_saved_responses_copies_every_file_the_two_snapshots_too(tmp_path):
     copy = measurement.copy_snapshot(tmp_path / "copy")
     assert tree_hash(copy) == tree_hash(REPO / "data" / "raw")
+    assert (copy / "snapshot_movie.jsonl").is_file() == (REPO / "data" / "raw" / "snapshot_movie.jsonl").is_file()
     shutil.rmtree(copy)
 
 
@@ -148,6 +151,13 @@ def cold(tmp_path_factory):
     finally:
         measurement.copy_snapshot = real_copy
     return {"rows": rows, "made": made, "work": work, "untouched": untouched}
+
+
+def test_a_fresh_copy_for_the_cold_start_test_holds_the_snapshots_as_well(cold):
+    real = REPO / "data" / "raw"
+    for number in (1, 2):
+        names = sorted(p.name for p in (cold["work"] / f"cold_raw_{number}").glob("snapshot_*"))
+        assert names == sorted(p.name for p in real.glob("snapshot_*"))
 
 
 def test_each_cold_start_uses_a_fresh_copy_and_runs_cold_then_warm(cold):
@@ -176,7 +186,7 @@ def test_the_command_runs_the_cold_start_test_when_asked(tmp_path):
     assert measure.main(["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1", "--sizes",
                          "--vector-runs", "0", "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
-    assert list(runs["state"]) == ["warm", "cold", "warm"] and list(runs["copy"]) == [1, 1, 1]
+    assert list(runs["state"]) == ["warm-up", "warm", "cold", "warm"] and list(runs["copy"]) == [1, 1, 1, 1]
 
 
 # --- synthetic responses and growth ----------------------------------------------------------------------
@@ -290,6 +300,64 @@ def test_growth_runs_one_cold_run_then_warm_runs_at_each_size_and_say_where_the_
     assert [(r["size"], r["state"]) for r in rows] == [(12, "cold"), (12, "warm"), (24, "cold"), (24, "warm")]
     assert {r["scenario"] for r in rows} == {"synthetic"} and set(outputs) == {12, 24}
     assert len(pd.read_csv(outputs[24] / "films.csv")) == 24
+
+
+def test_a_warm_up_run_is_reported_on_its_own_and_not_among_the_warm_runs():
+    runs = runs_frame()
+    runs.loc[0, "state"] = measurement.WARM_UP  # the slow first run of the series
+    runs.loc[0, "wall_s"] = 30.0
+    summary = measurement.summarize(runs)
+    wall = summary[summary["metric"] == "wall_s"].set_index("state")
+    assert wall.loc["warm-up", "runs"] == 1 and wall.loc["warm-up", "median_s"] == 30.0
+    assert wall.loc["warm", "runs"] == 9 and wall.loc["warm", "median_s"] == 6.0  # 2..10 without the warm-up
+    assert "warm-up" in measurement.format_report(summary)
+
+
+def test_the_budget_size_is_run_cold_on_three_fresh_copies_and_again_with_a_stale_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(measurement, "BUDGET_TITLES", 12)  # stand in for the 500 titles, to keep the test quick
+    rows, outputs = measurement.growth_runs(tmp_path, sizes=(12, 20), warm_after=1)
+    at_budget = [r for r in rows if r["size"] == 12]
+    assert [(r["state"], r["copy"]) for r in at_budget if r["state"] != "warm"] == [
+        ("cold", 1), ("cold", 2), ("cold", 3), (measurement.STALE_STATE, 1), (measurement.STALE_STATE, 2),
+        (measurement.STALE_STATE, 3),
+    ]
+    assert [r["run"] for r in at_budget] == [1, 2, 3, 4, 5, 6, 1, 2, 3]
+    assert [r["state"] for r in rows if r["size"] == 20] == ["cold", "warm"]  # other sizes: one copy
+    assert set(outputs) == {12, 20}
+
+    stale = [r for r in at_budget if r["state"] == measurement.STALE_STATE]
+    fresh = [r for r in at_budget if r["state"] == "cold"]
+    assert all(r["snapshot_build_s"] > 0 for r in stale) and all(r["snapshot_build_s"] < 0.2 for r in fresh)
+    assert measurement.STALE_STATE == "cold, snapshot stale"
+
+
+def test_a_stale_copy_is_rebuilt_flagged_and_gives_the_same_films_as_a_good_one(tmp_path):
+    import json
+
+    ids_file, raw = synthetic(tmp_path, 15)
+    stale = measurement.stale_copy(raw, tmp_path / "stale")
+    assert len((stale / "snapshot_movie.jsonl").read_text(encoding="utf-8").split(chr(10))) == 15  # 14 lines + the end
+    measurement.run_once(stale, ids_file, tmp_path / "stale_out")
+    measurement.run_once(raw, ids_file, tmp_path / "good_out")
+    last = json.loads((tmp_path / "stale_out" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert last["snapshot_rebuilt"] is True and "1 missing" in last["snapshot_rebuild_reason"]
+    assert (tmp_path / "stale_out" / "films.csv").read_bytes() == (tmp_path / "good_out" / "films.csv").read_bytes()
+    assert tree_hash(raw / "details") == tree_hash(stale / "details")  # the per-film files were not touched
+
+
+def test_a_synthetic_folder_comes_with_snapshots_a_real_fetch_would_have_written(tmp_path, monkeypatch):
+    from pipeline import fetch
+
+    ids_file, raw = synthetic(tmp_path, 12)
+    use_synthetic_folders(monkeypatch, ids_file, raw)
+    written = {n: (raw / n).read_bytes() for n in fetch.SNAPSHOT_NAMES.values()}
+    fetch.build_snapshots(fetch.read_fetch_log(), pd.Timestamp(FIXED_TIME).to_pydatetime())
+    assert {n: (raw / n).read_bytes() for n in fetch.SNAPSHOT_NAMES.values()} == written
+
+
+def test_the_command_takes_the_number_of_cold_copies_at_the_budget_size():
+    assert measure.parse_args([]).budget_cold_copies == 3
+    assert measure.parse_args(["--budget-cold-copies", "1"]).budget_cold_copies == 1
 
 
 def growth_summary():

@@ -257,6 +257,15 @@ def expected_snapshot(endpoint: str, log: dict, now: datetime | None = None) -> 
     return wanted
 
 
+def snapshot_text(held: dict[int, tuple[str, dict]]) -> str:
+    """The text of a snapshot: one compact JSON line per film, in film id order."""
+    lines = [
+        json.dumps({"tmdb_id": i, "fetched_at": at, "response": body}, ensure_ascii=False, separators=(",", ":"))
+        for i, (at, body) in sorted(held.items())
+    ]
+    return chr(10).join(lines) + (chr(10) if lines else "")
+
+
 def build_snapshot(endpoint: str, log: dict, now: datetime | None = None) -> dict[int, tuple[str, dict]]:
     """Write the snapshot from the per-film files, to a temp file first, and return what it holds.
 
@@ -272,15 +281,10 @@ def build_snapshot(endpoint: str, log: dict, now: datetime | None = None) -> dic
             continue
         if isinstance(body, dict) and body.get("id") == tmdb_id:
             held[tmdb_id] = (fetched_at, body)
-    lines = [
-        json.dumps({"tmdb_id": i, "fetched_at": at, "response": body}, ensure_ascii=False, separators=(",", ":"))
-        for i, (at, body) in held.items()
-    ]
     target = snapshot_file(endpoint)
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
-    text = chr(10).join(lines) + (chr(10) if lines else "")
-    tmp.write_bytes(text.encode("utf-8"))
+    tmp.write_bytes(snapshot_text(held).encode("utf-8"))
     os.replace(tmp, target)
     return held
 

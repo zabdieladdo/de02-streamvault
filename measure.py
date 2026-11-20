@@ -15,6 +15,7 @@ from pipeline.errors import PipelineStopError
 DEFAULTS = {
     "warm_runs": 10, "cold_copies": 3, "cold_followups": 4, "sizes": list(measurement.GROWTH_SIZES),
     "growth_followups": 4, "vector_runs": 5,
+    "budget_cold_copies": measurement.BUDGET_COLD_COPIES,
 }
 
 
@@ -29,6 +30,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="synthetic film counts for the growth test (none to skip it)")
     parser.add_argument("--growth-followups", type=int, default=DEFAULTS["growth_followups"],
                         help="warm runs after the cold run at each size")
+    parser.add_argument("--budget-cold-copies", type=int, default=DEFAULTS["budget_cold_copies"],
+                        help="fresh copies run cold at 500 titles, and again with a stale snapshot")
     parser.add_argument("--vector-runs", type=int, default=DEFAULTS["vector_runs"],
                         help="timed runs of the row-wise and vectorised versions (0 to skip)")
     parser.add_argument("--out", type=Path, default=config.REPO_ROOT / "out" / "measurement",
@@ -42,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
     options = {
         "warm_runs": args.warm_runs, "cold_copies": args.cold_copies, "cold_followups": args.cold_followups,
         "sizes": args.sizes, "growth_followups": args.growth_followups, "vector_runs": args.vector_runs,
+        "budget_cold_copies": args.budget_cold_copies,
     }
     try:
         with tempfile.TemporaryDirectory(prefix="streamvault_measure_") as tmp:

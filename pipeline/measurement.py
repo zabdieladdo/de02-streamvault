@@ -18,15 +18,20 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from pipeline import config
+from pipeline import config, fetch
 from pipeline.errors import PipelineStopError
 
 STAGE_KEYS = ["stage1_load_ids", "fetch", "flatten", "clean", "measure", "rank"]
-TIMING_COLUMNS = ["scenario", "size", "run", "state", "wall_s", *STAGE_KEYS, "stage_sum_s", "copy"]
+TIMING_COLUMNS = [
+    "scenario", "size", "run", "state", "wall_s", *STAGE_KEYS, "stage_sum_s", "snapshot_build_s", "copy",
+]
 SUMMARY_COLUMNS = ["scenario", "size", "state", "metric", "runs", "median_s", "p95_s", "worst_s"]
 BUDGET_SECONDS = 10  # S05: a full cached run, 500 titles
 BUDGET_TITLES = 500
 REAL_SIZE = 127  # rows in the real id list
+WARM_UP = "warm-up"  # the first run of a warm series on a freshly copied folder, reported on its own
+STALE_STATE = "cold, snapshot stale"  # a fresh copy whose snapshot no longer matches the fetch log
+BUDGET_COLD_COPIES = 3  # fresh copies run cold at the budget size (500 titles)
 
 
 class MeasurementError(PipelineStopError):
@@ -60,7 +65,10 @@ def run_once(raw_dir: Path, ids_file: Path, out_dir: Path) -> dict:
         raise MeasurementError(f"A measured run failed (exit {run.returncode}); not timed.\n{tail}")
     last = json.loads((out_dir / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     seconds = {key: float(last["seconds"].get(key, np.nan)) for key in STAGE_KEYS}
-    return {"wall_s": wall, **seconds, "stage_sum_s": float(np.nansum(list(seconds.values())))}
+    return {
+        "wall_s": wall, **seconds, "stage_sum_s": float(np.nansum(list(seconds.values()))),
+        "snapshot_build_s": float(last.get("snapshot_build_s", np.nan)),
+    }
 
 
 def measure_runs(
@@ -78,16 +86,21 @@ def measure_runs(
     return rows
 
 
-def copy_snapshot(destination: Path) -> Path:
-    """A copy of the real saved responses, so a measured run cannot change the real snapshot."""
-    shutil.copytree(config.RAW_DIR, destination)
+def copy_snapshot(destination: Path, source: Path | None = None) -> Path:
+    """A copy of the saved responses (the real ones by default), per-endpoint snapshots included, so a
+    measured run cannot change the real data/raw/."""
+    shutil.copytree(source or config.RAW_DIR, destination)
     return destination
 
 
 def warm_runs(work: Path, runs: int = 10) -> list[dict]:
-    """Warm runs of the full cached pipeline on the real snapshot (a copy of it), back to back."""
+    """A warm series on a copy of the real saved responses: a warm-up run, then `runs` warm runs, back to back.
+
+    The first run of a series on a freshly copied folder is reported on its own as the warm-up.
+    """
     raw = copy_snapshot(work / "warm_raw")
-    return measure_runs("real snapshot", REAL_SIZE, raw, config.INPUT_IDS, work / "warm_out", ["warm"] * runs)
+    states = [WARM_UP] + ["warm"] * runs
+    return measure_runs("real snapshot", REAL_SIZE, raw, config.INPUT_IDS, work / "warm_out", states)
 
 
 def cold_starts(work: Path, copies: int = 3, warm_after: int = 4) -> list[dict]:
@@ -110,11 +123,13 @@ def cold_starts(work: Path, copies: int = 3, warm_after: int = 4) -> list[dict]:
 
 def summarize(runs: pd.DataFrame) -> pd.DataFrame:
     """Median, 95th percentile (linear interpolation) and worst, per scenario, for wall time and each stage."""
-    metrics = ["wall_s", *STAGE_KEYS, "stage_sum_s"]
+    metrics = ["wall_s", *STAGE_KEYS, "stage_sum_s", "snapshot_build_s"]
     rows = []
     for (scenario, size, state), part in runs.groupby(["scenario", "size", "state"], sort=False):  # few groups
         for metric in metrics:
             values = part[metric].dropna()
+            if values.empty:  # a metric nobody recorded for this scenario
+                continue
             rows.append(
                 {
                     "scenario": scenario, "size": size, "state": state, "metric": metric, "runs": len(values),
@@ -203,6 +218,7 @@ def make_synthetic(
     genre_count = rng.integers(1, 5, n)
     companies = rng.integers(1, 6, n)
 
+    held: dict[str, dict] = {"details": {}, "credits": {}}  # what the snapshots hold, built as the files are written
     for i in range(n):  # one pair of files per film, like the fetch stage writes
         film = int(ids[i])
         genres = rng.choice(len(GENRES), int(genre_count[i]), replace=False)
@@ -246,6 +262,7 @@ def make_synthetic(
         }
         (raw / "details" / f"{film}.json").write_text(json.dumps(details), encoding="utf-8")
         (raw / "credits" / f"{film}.json").write_text(json.dumps(credits), encoding="utf-8")
+        held["details"][film], held["credits"][film] = (fetched_at, details), (fetched_at, credits)
 
     log = pd.DataFrame(
         {
@@ -256,22 +273,50 @@ def make_synthetic(
         }
     )
     log.to_csv(raw / "fetch_log.csv", index=False, encoding="utf-8")
+    for endpoint, name in fetch.SNAPSHOT_NAMES.items():  # the snapshots a real fetch would have left
+        (raw / name).write_bytes(fetch.snapshot_text(held[endpoint]).encode("utf-8"))
     ids_file = folder / "id_list.csv"
     ids_file.write_bytes(("tmdb_id\r\n" + "".join(f"{i}\r\n" for i in ids)).encode("utf-8"))
     return ids_file, raw
 
 
-def growth_runs(work: Path, sizes=GROWTH_SIZES, warm_after: int = 4) -> tuple[list[dict], dict[int, Path]]:
-    """Synthetic data at each size: one cold run on the freshly written files, then warm runs.
+def stale_copy(raw: Path, destination: Path) -> Path:
+    """A fresh copy of a folder whose details snapshot is missing its last film, so it no longer matches the log."""
+    copy_snapshot(destination, raw)
+    path = destination / fetch.SNAPSHOT_NAMES["details"]
+    lines = [line for line in path.read_text(encoding="utf-8").split(chr(10)) if line]
+    path.write_bytes((chr(10).join(lines[:-1]) + chr(10)).encode("utf-8"))
+    return destination
 
-    Returns the timing rows and, for each size, the folder its outputs were written to.
+
+def growth_runs(
+    work: Path, sizes=GROWTH_SIZES, warm_after: int = 4, budget_copies: int = BUDGET_COLD_COPIES
+) -> tuple[list[dict], dict[int, Path]]:
+    """Synthetic data at each size: a cold run on freshly written files, then warm runs.
+
+    At the budget size (500 titles) this is done on `budget_copies` fresh copies, and one more scenario
+    shows the rebuild cost: fresh copies whose snapshot is stale, run once each. Returns the timing rows
+    and, for each size, the folder the first copy's outputs were written to.
     """
     rows, outputs = [], {}
     for size in sizes:  # a few sizes, each generated and run in turn
         ids_file, raw = make_synthetic(size, work / f"synthetic_{size}")
-        out = work / f"synthetic_{size}_out"
-        rows += measure_runs("synthetic", size, raw, ids_file, out, ["cold"] + ["warm"] * warm_after)
-        outputs[size] = out
+        copies = budget_copies if size == BUDGET_TITLES else 1
+        states = ["cold"] + ["warm"] * warm_after
+        for number in range(1, copies + 1):  # copy 1 is the folder just written; the rest are fresh copies of it
+            folder = raw if number == 1 else copy_snapshot(work / f"synthetic_{size}_copy_{number}", raw)
+            out = work / f"synthetic_{size}_out_{number}"
+            rows += measure_runs(
+                "synthetic", size, folder, ids_file, out, states, copy=number, first_run=(number - 1) * len(states) + 1
+            )
+            outputs.setdefault(size, out)
+        if size == BUDGET_TITLES:
+            for number in range(1, budget_copies + 1):
+                folder = stale_copy(raw, work / f"synthetic_{size}_stale_{number}")
+                rows += measure_runs(
+                    "synthetic", size, folder, ids_file, work / f"synthetic_{size}_stale_out_{number}",
+                    [STALE_STATE], copy=number, first_run=number,
+                )
     return rows, outputs
 
 
@@ -377,12 +422,12 @@ def format_report(summary: pd.DataFrame) -> str:
     wall = summary[summary["metric"] == "wall_s"]
     lines = [
         "Timing of a full cached run (wall time includes Python start-up and imports)",
-        f"  {'scenario':<28}{'size':>6}{'runs':>6}{'median':>9}{'p95':>9}{'worst':>9}",
+        f"  {'scenario':<40}{'size':>6}{'runs':>6}{'median':>9}{'p95':>9}{'worst':>9}",
     ]
     for row in wall.to_dict("records"):  # one line per scenario
         label = f"{row['scenario']}, {row['state']}"
         lines.append(
-            f"  {label:<28}{row['size']:>6}{row['runs']:>6}{row['median_s']:>8.2f}s{row['p95_s']:>8.2f}s"
+            f"  {label:<40}{row['size']:>6}{row['runs']:>6}{row['median_s']:>8.2f}s{row['p95_s']:>8.2f}s"
             f"{row['worst_s']:>8.2f}s"
         )
     return "\n".join(lines)
@@ -404,7 +449,9 @@ def run_all(options: dict, work: Path) -> dict[str, pd.DataFrame]:
         rows += cold_starts(work, options["cold_copies"], options["cold_followups"])
     outputs: dict[int, Path] = {}
     if options["sizes"]:
-        growth, outputs = growth_runs(work, options["sizes"], options["growth_followups"])
+        growth, outputs = growth_runs(
+            work, options["sizes"], options["growth_followups"], options.get("budget_cold_copies", BUDGET_COLD_COPIES)
+        )
         rows += growth
     runs = pd.DataFrame(rows, columns=TIMING_COLUMNS)
     summary = summarize(runs)
