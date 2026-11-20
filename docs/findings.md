@@ -21,7 +21,7 @@
 
 ## Findings, ranked by risk
 
-Order after the rank stage: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-11, F-05, F-02 (Medium), F-03, F-04 (Low).
+Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-11, F-05, F-02 (Medium), F-03, F-04, F-12 (Low).
 
 ### F-06: The candidate list is mostly franchise films — Severity: High
 
@@ -120,6 +120,17 @@ Order after the rank stage: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **Effect on the client's number:** none; there is nothing to analyse.
 - **What I did about it:** quarantined with reasons.
 - **Residual risk:** if these were placeholders for titles someone meant to add, those titles are missing and nobody can say which.
+
+### F-12: Live spot-check: no parsing error on the riskiest films — Severity: Low
+
+- **What it is:** 8 films chosen as most likely to be wrong were re-fetched live on 20 Nov 2026 and compared field by field with the saved snapshot and our tables.
+- **How I detected it:** `python spotcheck.py` (ADR-029).
+- **Scale:** 112 fields: 99 match; 13 volatile changes (vote counts +3 to +8, popularity within about ±2.5%, one vote average +0.001); 0 parsing errors, 0 wrong fields, 0 source changes.
+- **Effect on the client's number:** none. Every figure behind the deal note (the three Lord of the Rings films' budgets and revenues) matches live. No vote rank changes.
+- **What I did about it:** recorded; the check stays in the repository for every quarterly re-run.
+- **Residual risk:** 104 films were not checked live; the snapshot was hours old, so the check tests our parsing more than TMDb's stability.
+
+Films checked: Batman Begins (heaviest parsing), Star Wars (highest multiple), The Shawshank Redemption (lowest multiple), The Dark Knight (cleaning decision: listed three times), Back to the Future Part II (slowest response, standing in for "nearly failed": no request needed a retry), and the three Lord of the Rings films (deal-note candidate).
 
 ### Observation: problems cluster near the end of the file
 
