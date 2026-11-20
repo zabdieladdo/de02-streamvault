@@ -224,3 +224,123 @@ def talent_signal(
         ascending=[True, True, False, False, False, True],
     )
     return p[SIGNAL_COLUMNS].reset_index(drop=True)
+
+
+SHORTLIST_COLUMNS = [
+    "list", "rank", "name", "collection_id", "tmdb_id", "multiple", "rank_by_multiple",
+    "vote_count_or_median", "vote_rank", "release_years", "figure_2000_on", "n_on_list", "weakest", "reason",
+]
+
+
+def _ordinal(n: pd.Series) -> pd.Series:
+    """1 -> 1st, 2 -> 2nd, 11 -> 11th, 22 -> 22nd, built without a loop."""
+    n = n.astype("int64")
+    last_two = n % 100
+    suffix = np.select(
+        [(last_two >= 11) & (last_two <= 13), n % 10 == 1, n % 10 == 2, n % 10 == 3],
+        ["th", "st", "nd", "rd"], default="th",
+    )
+    return n.astype(str) + suffix
+
+
+def _times(x: pd.Series) -> pd.Series:
+    """A multiple to one decimal place with the times sign: 7.1×."""
+    return x.astype("float64").round(1).astype(str) + "×"
+
+
+def _thousands(n: pd.Series) -> pd.Series:
+    return n.astype("int64").astype(str).str.replace(r"\B(?=(\d{3})+(?!\d))", ",", regex=True)
+
+
+def _years(first: pd.Series, last: pd.Series) -> pd.Series:
+    a, b = first.astype("string"), last.astype("string")
+    return a.where(first == last, a + "-" + b)
+
+
+def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.DataFrame:
+    """Top bundles, top standalones and one audience pick, each with a plain-sentence reason."""
+    parts = []
+
+    # franchise: rankable bundles, best median multiple first
+    n_rankable = int(bundles["rankable"].sum())
+    fr = bundles[bundles["rankable"] & (bundles["bundle_rank"] <= config.SHORTLIST_FRANCHISE_N)]
+    fr = fr.sort_values("bundle_rank")
+    recent = fr["median_roi_2000_on"]
+    recent_text = np.where(
+        recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
+    )
+    parts.append(
+        pd.DataFrame(
+            {
+                "list": "franchise", "rank": np.arange(1, len(fr) + 1), "name": fr["collection_name"],
+                "collection_id": fr["collection_id"], "tmdb_id": pd.array([pd.NA] * len(fr), dtype="Int64"),
+                "multiple": fr["median_roi"], "rank_by_multiple": fr["bundle_rank"],
+                "vote_count_or_median": fr["median_vote_count"], "vote_rank": fr["vote_rank"],
+                "release_years": _years(fr["first_year"], fr["last_year"]),
+                "figure_2000_on": recent.astype("object").where(recent.notna(), "pre-2000"),
+                "n_on_list": fr["n_on_list"],
+                "weakest": fr["weakest_title"] + " " + _times(fr["weakest_roi"]),
+                "reason": (
+                    "Median " + _times(fr["median_roi"]) + " across " + fr["n_on_list"].astype(str)
+                    + " films on the list (" + _ordinal(fr["bundle_rank"]) + " of " + str(n_rankable)
+                    + " rankable bundles); weakest film " + fr["weakest_title"] + " at "
+                    + _times(fr["weakest_roi"]) + "; " + pd.Series(recent_text, index=fr.index) + "; "
+                    + _ordinal(fr["vote_rank"]) + " by audience votes."
+                ),
+            }
+        )
+    )
+
+    # standalones: usable films, best multiple first (ties: more votes, then film id)
+    s = films_clean[~films_clean["is_franchise"].astype(bool) & films_clean["roi_usable"].astype(bool)].copy()
+    s["roi"] = s["roi"].astype("float64")
+    s["votes"] = s["vote_count"].astype("float64")
+    s = s.sort_values(["roi", "votes", "tmdb_id"], ascending=[False, False, True]).reset_index(drop=True)
+    n_stand = len(s)
+    s["rank_by_multiple"] = np.arange(1, n_stand + 1)
+    s["vote_rank"] = s["votes"].rank(method="min", ascending=False)
+    s["release_years"] = s["release_year"].astype("string")
+    s["pre2000"] = ~s["in_window_2000"].astype(bool)
+    s["figure_2000_on"] = s["roi"].astype("object").where(~s["pre2000"], "pre-2000")
+
+    def standalone_rows(rows: pd.DataFrame, list_name: str, reason: pd.Series) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "list": list_name, "rank": np.arange(1, len(rows) + 1), "name": rows["title"],
+                "collection_id": pd.array([pd.NA] * len(rows), dtype="Int64"), "tmdb_id": rows["tmdb_id"],
+                "multiple": rows["roi"], "rank_by_multiple": rows["rank_by_multiple"],
+                "vote_count_or_median": rows["votes"], "vote_rank": rows["vote_rank"],
+                "release_years": rows["release_years"], "figure_2000_on": rows["figure_2000_on"],
+                "n_on_list": pd.array([pd.NA] * len(rows), dtype="Int64"),
+                "weakest": pd.Series([pd.NA] * len(rows), index=rows.index, dtype="string"),
+                "reason": reason,
+            }
+        )
+
+    top = s.head(config.SHORTLIST_STANDALONE_N)
+    parts.append(
+        standalone_rows(
+            top, "standalone",
+            _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of " + str(n_stand)
+            + " standalones); released " + top["release_years"] + "; " + _ordinal(top["vote_rank"]) + " of "
+            + str(n_stand) + " by audience votes.",
+        )
+    )
+
+    # audience pick: the most-voted standalone that is not in the top group
+    rest = s.iloc[config.SHORTLIST_STANDALONE_N:].sort_values(["votes", "tmdb_id"], ascending=[False, True]).head(1)
+    top_label = "five" if config.SHORTLIST_STANDALONE_N == 5 else str(config.SHORTLIST_STANDALONE_N)
+    parts.append(
+        standalone_rows(
+            rest, "audience pick",
+            "Most-voted standalone not in the top " + top_label + ": " + _thousands(rest["votes"]) + " votes ("
+            + _ordinal(rest["vote_rank"]) + " of " + str(n_stand) + ") but " + _times(rest["roi"])
+            + " its budget (" + _ordinal(rest["rank_by_multiple"]) + " of " + str(n_stand) + ").",
+        )
+    )
+
+    out = pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) else None
+    if out is None:
+        return pd.DataFrame(columns=SHORTLIST_COLUMNS)
+    out[["rank", "rank_by_multiple", "vote_rank"]] = out[["rank", "rank_by_multiple", "vote_rank"]].astype("int64")
+    return out[SHORTLIST_COLUMNS]

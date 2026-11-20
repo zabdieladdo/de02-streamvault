@@ -308,3 +308,94 @@ def test_talent_join_keeps_every_row_and_flags_a_repeated_film_id():
     doubled = pd.concat([f, f.iloc[[0]]], ignore_index=True)
     rows, unique = rank.talent_join_rows(talent, doubled)
     assert rows == 3 and not unique  # the join would add a row: C-29 stops the run
+
+
+# --- shortlist ----------------------------------------------------------------------
+
+def shortlist_fixture(n_bundles=4):
+    rows = []
+    for c in range(1, n_bundles + 1):  # bundle c has median multiple 10 - c, so bundle 1 is best
+        rows += bundle_rows(c, [9 - c, 10 - c, 11 - c], years=[1999, 2004, 2008], base_id=100 * c, votes=2000 - 100 * c)
+    # eight standalones: multiples 20, 18, ... descending; votes rise as multiples fall
+    rows += [{"tmdb_id": 1000 + i, "title": f"S{i}", "year": 2010 + i, "votes": 1000 + 1000 * i, **money(20 - 2 * i)}
+             for i in range(8)]
+    return flagged(rows)
+
+
+def test_shortlist_has_three_five_and_one_audience_pick():
+    f = shortlist_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert sl["list"].value_counts().to_dict() == {"standalone": 5, "franchise": 3, "audience pick": 1}
+    fr = sl[sl["list"] == "franchise"]
+    assert list(fr["collection_id"]) == [1, 2, 3] and list(fr["rank"]) == [1, 2, 3]
+    st = sl[sl["list"] == "standalone"]
+    assert list(st["name"]) == ["S0", "S1", "S2", "S3", "S4"]
+    pick = sl[sl["list"] == "audience pick"].iloc[0]
+    assert pick["name"] == "S7"  # most votes among those outside the top five
+    assert pick["vote_count_or_median"] == 8000 and pick["rank_by_multiple"] == 8 and pick["vote_rank"] == 1
+
+
+def test_audience_pick_is_never_in_the_top_five():
+    f = shortlist_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    top = set(sl.loc[sl["list"] == "standalone", "tmdb_id"])
+    assert sl.loc[sl["list"] == "audience pick", "tmdb_id"].iloc[0] not in top
+
+
+def test_shortlist_short_when_too_few_bundles():
+    rows = bundle_rows(1, [4, 5, 6]) + bundle_rows(2, [2, 3, 4], base_id=10) + bundle_rows(3, [1, 1], base_id=20)
+    f = flagged(rows + [{"tmdb_id": 99, "title": "solo", **money(3)}])
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert (sl["list"] == "franchise").sum() == 2
+    assert (sl["list"] == "standalone").sum() == 1 and (sl["list"] == "audience pick").sum() == 0
+
+
+def test_franchise_columns():
+    f = shortlist_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    top = sl[sl["list"] == "franchise"].iloc[0]
+    assert top["release_years"] == "1999-2008" and top["n_on_list"] == 3
+    assert top["multiple"] == 9 and top["figure_2000_on"] == 9.5  # films 9 (2004) and 10 (2008) are 2000 onward
+    assert top["weakest"] == "1-1 8.0×"
+
+
+def test_standalone_before_2000_shows_pre_2000():
+    rows = [{"tmdb_id": i, "title": f"S{i}", "year": 1980 + i * 10, **money(10 - i)} for i in range(1, 4)]
+    f = flagged(rows)
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    figs = dict(zip(sl["name"], sl["figure_2000_on"]))
+    assert figs["S1"] == "pre-2000" and figs["S2"] == 8 and figs["S3"] == 7
+
+
+def test_reason_text_carries_the_row_figures():
+    f = shortlist_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    fr = sl[sl["list"] == "franchise"].iloc[0]
+    assert fr["reason"] == (
+        "Median 9.0× across 3 films on the list (1st of 4 rankable bundles); weakest film 1-1 at 8.0×; "
+        "9.5× from 2000 onward; 1st by audience votes."
+    )
+    st = sl[sl["list"] == "standalone"].iloc[2]
+    assert st["reason"] == "16.0× its budget (3rd of 8 standalones); released 2012; 6th of 8 by audience votes."
+    pick = sl[sl["list"] == "audience pick"].iloc[0]
+    assert pick["reason"] == (
+        "Most-voted standalone not in the top five: 8,000 votes (1st of 8) but 6.0× its budget (8th of 8)."
+    )
+
+
+def test_ordinals_handle_the_teens():
+    got = rank._ordinal(pd.Series([1, 2, 3, 4, 11, 12, 13, 21, 22, 23, 101, 111])).tolist()
+    assert got == ["1st", "2nd", "3rd", "4th", "11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th"]
+
+
+def test_tied_multiples_rank_by_votes():
+    rows = [{"tmdb_id": 1, "title": "few", "votes": 10, **money(5)}, {"tmdb_id": 2, "title": "many", "votes": 90, **money(5)}]
+    f = flagged(rows)
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert list(sl["name"]) == ["many", "few"]
+
+
+def test_empty_list_gives_an_empty_shortlist():
+    f = flagged([{"budget": 0}])
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert len(sl) == 0 and list(sl.columns) == rank.SHORTLIST_COLUMNS
