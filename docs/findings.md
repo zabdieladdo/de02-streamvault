@@ -21,7 +21,7 @@
 
 ## Findings, ranked by risk
 
-Order after the measure stage: F-06, F-07, F-01, F-08, F-05, F-02, F-03, F-04.
+Order after the rank stage: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-11, F-05, F-02 (Medium), F-03, F-04 (Low).
 
 ### F-06: The candidate list is mostly franchise films — Severity: High
 
@@ -41,6 +41,15 @@ Order after the measure stage: F-06, F-07, F-01, F-08, F-05, F-02, F-03, F-04.
 - **What I did about it:** both measures are reported; the memo states confidence as moderate and names StreamVault's own viewing data as the evidence that would change the recommendation.
 - **Residual risk:** cannot be resolved from TMDb data.
 
+### F-09: The shortlist depends on the window — Severity: High
+
+- **What it is:** all three shortlists differ between all years and 2000 onward. Franchise: Star Wars, Lord of the Rings, Indiana Jones against Lord of the Rings, Ice Age, The Avengers. Standalone: The Good, the Bad and the Ugly, Pulp Fiction, Schindler's List, Spirited Away, Forrest Gump against Spirited Away, Inception, Interstellar, Memento, The Departed.
+- **How I detected it:** both windows ranked by the same function; `window_differences.csv`; the run prints SHORTLIST DIFFERS BETWEEN WINDOWS.
+- **Scale:** only The Lord of the Rings (franchise) and Spirited Away (standalone) appear in both windows' version of the same list. Interstellar moves between lists: the all-years audience pick, third on the 2000-onward standalone list.
+- **Effect on the client's number:** the all-years picks rest on 1966-1994 box office. Star Wars, first over all years, falls to 1.31× the median within the 2000-onward window and cannot be ranked there (2 films).
+- **What I did about it:** the memo stands behind 2000 onward (ADR-028); the deal note uses a candidate ranked in both windows.
+- **Residual risk:** the 2000-onward standalone list is drawn from 8 films.
+
 ### F-01: Six ids listed twice — Severity: High
 
 - **What it is:** 155, 278, 550, 603, 680 and 1891 each appear on two lines.
@@ -58,6 +67,23 @@ Order after the measure stage: F-06, F-07, F-01, F-08, F-05, F-02, F-03, F-04.
 - **Effect on the client's number:** anyone comparing averages would conclude the two groups perform alike.
 - **What I did about it:** the median is the headline (ADR-017).
 - **Residual risk:** none for the direction of the result; the size of the gap depends on the measure chosen.
+
+### F-10: Every film after the first earns less, not only middle entries — Severity: Medium
+
+- **What it is:** middle films earn a median 0.69 of their franchise's first film; the latest film also 0.69.
+- **How I detected it:** within-bundle comparison over 22 bundles and 41 middle films (ADR-020).
+- **Scale:** 18 of 22 bundles.
+- **Effect on the client's number:** the team's "weak middle" worry is real but misplaced: the decline starts after the first film. The first film carries much of a bundle's value.
+- **What I did about it:** reported as a supporting check, with the selection bias stated.
+- **Residual risk:** first films are selected winners, so part of the decline is built in.
+
+### F-11: The talent evidence is thin and entangled — Severity: Medium
+
+- **What it is:** 3 people are consistently above on return (Spielberg, Ford, Neeson); Ford and Neeson are at exactly 2 of 3. Bale and Caine are below mostly through Nolan's films (Bale in 4 of his 5 films on the list, Caine in all 3).
+- **How I detected it:** talent signal over independent titles (ADR-021).
+- **Effect on the client's number:** names cannot carry a licensing decision on their own.
+- **What I did about it:** labels name the measure; the vote hit rate is shown beside it.
+- **Residual risk:** return and audience interest disagree for the most-watched director on the list.
 
 ### F-05: Five ids that TMDb does not know — Severity: Medium
 
@@ -118,3 +144,4 @@ The eight pre-2000 standalones split into four below 2.7× (Shawshank, Fight Clu
 
 - Which of the three sources each row came from: the file has no source column, so repeats and bad values cannot be traced to the source that produced them. The clustering above suggests, but does not show, one source.
 - What the five not-found ids refer to: TMDb has no record of them, so we cannot tell whether they are films, and if so which.
+- How many films each studio's bundle actually contains. Bundles are valued on the films on the list (8 of the 22 rankable bundles straddle 2000).
