@@ -47,7 +47,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **How I detected it:** both windows ranked by the same function; `window_differences.csv`; the run prints SHORTLIST DIFFERS BETWEEN WINDOWS.
 - **Scale:** only The Lord of the Rings (franchise) and Spirited Away (standalone) appear in both windows' version of the same list. Interstellar moves between lists: the all-years audience pick, third on the 2000-onward standalone list.
 - **Effect on the client's number:** the all-years picks rest on 1966-1994 box office. Star Wars, first over all years, falls to 1.31× the median within the 2000-onward window and cannot be ranked there (2 films).
-- **What I did about it:** the memo stands behind 2000 onward (ADR-028); the deal note uses a candidate ranked in both windows.
+- **What I did about it:** the memo stands behind 2000 onward; the deal note uses a candidate ranked in both windows.
 - **Residual risk:** the 2000-onward standalone list is drawn from 8 films.
 
 ### F-01: Six ids listed twice — Severity: High
@@ -65,13 +65,13 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **How I detected it:** median beside mean on every row; leave-one-out.
 - **Scale:** one film, The Good, the Bad and the Ugly (1966, 32.4×), lifts the standalone mean; removing it moves the standalone median from 3.84 to 3.24.
 - **Effect on the client's number:** anyone comparing averages would conclude the two groups perform alike.
-- **What I did about it:** the median is the headline (ADR-017).
+- **What I did about it:** the median is the headline (ADR-006).
 - **Residual risk:** none for the direction of the result; the size of the gap depends on the measure chosen.
 
 ### F-10: Every film after the first earns less, not only middle entries — Severity: Medium
 
 - **What it is:** middle films earn a median 0.69 of their franchise's first film; the latest film also 0.69.
-- **How I detected it:** within-bundle comparison over 22 bundles and 41 middle films (ADR-020).
+- **How I detected it:** within-bundle comparison over 22 bundles and 41 middle films.
 - **Scale:** 18 of 22 bundles.
 - **Effect on the client's number:** the team's "weak middle" worry is real but misplaced: the decline starts after the first film. The first film carries much of a bundle's value.
 - **What I did about it:** reported as a supporting check, with the selection bias stated.
@@ -80,7 +80,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 ### F-11: The talent evidence is thin and entangled — Severity: Medium
 
 - **What it is:** 3 people are consistently above on return (Spielberg, Ford, Neeson); Ford and Neeson are at exactly 2 of 3. Bale and Caine are below mostly through Nolan's films (Bale in 4 of his 5 films on the list, Caine in all 3).
-- **How I detected it:** talent signal over independent titles (ADR-021).
+- **How I detected it:** talent signal over independent titles.
 - **Effect on the client's number:** names cannot carry a licensing decision on their own.
 - **What I did about it:** labels name the measure; the vote hit rate is shown beside it.
 - **Residual risk:** return and audience interest disagree for the most-watched director on the list.
@@ -91,7 +91,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **How I detected it:** the film request for each id returned HTTP 404 with the message "The resource you requested could not be found.", recorded in the fetch log.
 - **Scale:** 5 of 117 ids sent to TMDb (4.3%); 5 of 127 rows in the file (3.9%).
 - **Effect on the client's number:** five candidate titles cannot be evaluated, and nobody knows which films they are. If any is part of a bundle, that bundle looks smaller in the analysis than it is.
-- **What I did about it:** quarantined as `not_found_on_api` with TMDb's message. Credits were not requested for them. The answer is remembered for 180 days, so a re-run does not ask again, and it is not counted as a failed request (ADR-008, ADR-009).
+- **What I did about it:** quarantined as `not_found_on_api` with TMDb's message. Credits were not requested for them. The answer is remembered for 180 days, so a re-run does not ask again, and it is not counted as a failed request.
 - **Residual risk:** if the ids are real titles in another catalogue, those titles are missing from the shortlist. Q4 asks what they refer to.
 
 ### F-02: The standard file reader drops a row without warning — Severity: Medium
@@ -124,7 +124,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 ### F-12: Live spot-check: no parsing error on the riskiest films — Severity: Low
 
 - **What it is:** 8 films chosen as most likely to be wrong were re-fetched live on 20 Nov 2026 and compared field by field with the saved snapshot and our tables.
-- **How I detected it:** `python spotcheck.py` (ADR-029).
+- **How I detected it:** `python spotcheck.py`.
 - **Scale:** 112 fields: 99 match; 13 volatile changes (vote counts +3 to +8, popularity within about ±2.5%, one vote average +0.001); 0 parsing errors, 0 wrong fields, 0 source changes.
 - **Effect on the client's number:** none. Every figure behind the deal note (the three Lord of the Rings films' budgets and revenues) matches live. No vote rank changes.
 - **What I did about it:** recorded; the check stays in the repository for every quarterly re-run.

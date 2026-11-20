@@ -1,8 +1,8 @@
-# ADR-011: The analysis table has one row per film
+# ADR-003: The analysis table has one row per film
 
 - **Status:** Accepted
 - **Date:** 2026-11-20
-- **Decision owner:** Noell
+- **Decision owner:** Zabdiel
 
 ## Context
 
@@ -10,7 +10,7 @@ Each film response contains lists: genres, production companies, and in the cred
 
 ## Decision
 
-`films.csv` has one row per film, keyed by TMDb id. Lists are reduced to counts and one summary value: `n_genres`, `primary_genre` (first listed), `genres_all` for reference, `n_production_companies`, `n_cast`, `n_directors`. People go in a separate table (ADR-013).
+`films.csv` has one row per film, keyed by TMDb id. Lists are reduced to counts and one summary value: `n_genres`, `primary_genre` (first listed), `genres_all` for reference, `n_production_companies`, `n_cast`, `n_directors`. People go in a separate table.
 
 ## Alternatives considered
 

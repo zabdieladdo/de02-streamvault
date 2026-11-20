@@ -1,8 +1,8 @@
-# ADR-017: The headline measure is the median revenue÷budget multiple per group, with the mean, total÷total and median vote count beside it
+# ADR-005: The headline measure is the median revenue÷budget multiple per group, with the mean, total÷total and median vote count beside it
 
 - **Status:** Accepted
 - **Date:** 2026-11-20
-- **Decision owner:** Noell
+- **Decision owner:** Zabdiel
 
 ## Context
 

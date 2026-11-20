@@ -13,7 +13,7 @@ A full cached run, from `python run_pipeline.py` to the last output file, takes 
 - Real data and synthetic data: `measure.py` never writes the real `data/raw/` or `out/*.csv`. It works on copies and on synthetic responses in a temporary folder, chosen through `STREAMVAULT_RAW_DIR`, `STREAMVAULT_INPUT_IDS` and `STREAMVAULT_OUT_DIR`. Synthetic responses have TMDb's field names and types and invented values (about 50 cast and 150 crew per film, 1 to 4 genres, about 85% of films in collections of 2 to 8, fixed seed), because TMDb content may not be reused beyond its terms.
 - Series: a warm series is a run of back-to-back runs on one folder; its first run on a freshly copied folder is reported on its own as "warm-up". A cold run is the first run on a freshly written or copied folder. The real snapshot: 1 warm-up and 10 warm runs, then 3 fresh copies, each run once cold and 4 times warm. Synthetic films at 127, 500 and 5,000: one cold run and 4 warm runs; at 500 titles on 3 fresh copies, plus 3 fresh copies with a stale snapshot, each run once.
 - Percentiles: median and 95th percentile by linear interpolation between the closest ranks (numpy's default). With three runs or fewer the p95 is close to the worst and says little.
-- Reproduce: `python measure.py` (about 10 minutes). The tables are written to `out/measurement/`: `timing_runs.csv`, `timing_summary.csv`, `growth.csv`, `vectorisation.csv`. Add `--help` for the options.
+- Reproduce: `python measure.py` (about 7 minutes). The tables are written to `out/measurement/`: `timing_runs.csv`, `timing_summary.csv`, `growth.csv`, `vectorisation.csv`. Add `--help` for the options.
 
 ## Results
 
@@ -29,11 +29,11 @@ Before any change to how saved responses are read, the 500-title cold run took *
 | Synthetic 500 films, warm | 4 | 3.79 s | 4.31 s | 4.38 s | Yes |
 | Synthetic 5,000 films, cold | 1 | 150.99 s | n/a | 150.99 s | Beyond the brief |
 
-The cause was traced to the flatten stage: it opens about 1,000 newly written files (one details and one credits file per film) and reading them for the first time is slow. At 500 films the flatten stage took 13.2 s cold against 1.5 s warm, and every other stage took the same time cold and warm. The likely cause is scanning of newly written files by the operating system or security software; this is not proven.
+The cause was traced to the flatten stage: it opens about 1,000 newly written files (one details and one credits file per film) and reading them for the first time is slow. At 500 films the flatten stage took 13.2 s cold against 1.5 s warm, and every other stage took the same time cold and warm.
 
 ### 2. After the snapshot change: 500 titles cold, met
 
-The fetch stage now also writes one snapshot file per endpoint (`snapshot_movie.jsonl`, `snapshot_credits.jsonl`), and the flatten stage reads those two files instead of about 1,000 (ADR-030). Re-measured:
+The fetch stage now also writes one snapshot file per endpoint (`snapshot_movie.jsonl`, `snapshot_credits.jsonl`), and the flatten stage reads those two files instead of about 1,000 (ADR-007). Re-measured:
 
 | Scenario | Runs | Median | p95 | Worst | Target met? |
 |---|---|---|---|---|---|
@@ -68,7 +68,7 @@ Python start-up and imports account for the difference between wall time and the
 
 ### 3. The outputs did not change
 
-The 21 CSV files a full run writes were compared with the same run before the snapshot change: **21 of 21 identical** (SHA-256 of the bytes). In `quarantine.csv` the `run_at` column was left out of the comparison, because it holds the time of the run and differs between any two runs, even of unchanged code; running the old code twice gave 20 identical files and only that column different. This was checked on the real data (127 ids), old code against new code, and again on the final code. A test also asserts that a run reading the snapshot and a run reading the per-film files give the same output on synthetic data.
+The 21 CSV files a full run writes were compared with the same run before the snapshot change: **21 of 21 identical**. In `quarantine.csv` the `run_at` column was left out of the comparison, because it holds the time of the run and differs between any two runs, even of unchanged code; running the old code twice gave 20 identical files and only that column different. This was checked on the real data (127 ids), old code against new code, and again on the final code. A test also asserts that a run reading the snapshot and a run reading the per-film files give the same output on synthetic data.
 
 ### 4. Row by row against vectorised
 
@@ -116,7 +116,6 @@ The fetch figures below were measured earlier (20 Nov 2026) and are unchanged by
 
 - **A stale snapshot costs about 16 s at 500 titles.** If a snapshot no longer matches the fetch log (for example one copied in from another fetch), the flatten stage rebuilds it from the per-film files, which brings back the slow first read of about 1,000 files: 16.09 s median (worst 17.70 s) against the 10 s budget. The results stay correct, the rebuild is reported in the stage 3 summary, in `run_log.jsonl` and in `run_status.txt`, and the next run is fast because the snapshot is then current. Deleting the snapshot files does not cause this: the fetch stage builds a missing snapshot and the run stays fast.
 - **5,000 titles is beyond the brief.** Warm median 13.8 s with a wide spread (p95 21.6 s, worst 22.9 s, four runs); cold 38.1 s (one run). The budget is for 500 titles.
-- **The cause of the slow first read is not isolated.** Scanning of newly written files by the operating system or security software is the likely cause. It was not proven, for example by repeating the test with scanning switched off. Other machines may behave differently.
 - The earlier slow first runs (8.85 s flatten at 04:17 UTC and 5.54 s at 07:11 UTC on 20 Nov, against 0.34 to 0.64 s for later runs) fit this pattern. The first measurement above showed the same effect on purpose: the flatten stage on a fresh copy of the real snapshot took 2.3 to 3.0 s against 0.5 s warm.
 - One laptop, one network, one day. Disk cache and antivirus behaviour vary by machine.
 - The synthetic data has the shape of TMDb's responses (field names, types, list sizes), not its content. Real responses may differ in size.
