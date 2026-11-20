@@ -2,7 +2,7 @@
 
 ## Summary
 
-127 rows were received. 10 left at load (blank, placeholder, negative, IMDb id, six repeats), 5 at the fetch (not on TMDb), leaving 112 films in the analysis table, one row per film, as of the 20 Nov 2026 snapshot. TMDb's data for these 112 is complete: no zero budgets or revenues, no missing release dates, no unreleased films, every film with a director and three billed actors. The faults in this lab are in the candidate list, not in the data returned for it. The largest risk to the recommendation is the list's shape: 96 franchise films against 16 standalones (F-06).
+127 rows were received. 10 left at load (blank, placeholder, negative, IMDb id, six repeats), 5 at the fetch (not on TMDb), leaving 112 films in the analysis table, one row per film, as of the 20 Nov 2026 snapshot. TMDb's data for these 112 is complete: no zero budgets or revenues, no missing release dates, no unreleased films, every film with a director and three billed actors. The faults in this lab are in the candidate list, not in the data returned for it. The largest risk to the recommendation is the list's shape: 96 franchise films against 16 standalones (F-06). Every decision the analysis made was rerun with and without it: none changes which group leads, in either window.
 
 ## Reconciliation
 
@@ -21,7 +21,7 @@
 
 ## Findings, ranked by risk
 
-Order after the flatten stage: F-06, F-01, F-05, F-02, F-03, F-04.
+Order after the measure stage: F-06, F-07, F-01, F-08, F-05, F-02, F-03, F-04.
 
 ### F-06: The candidate list is mostly franchise films — Severity: High
 
@@ -32,6 +32,15 @@ Order after the flatten stage: F-06, F-01, F-05, F-02, F-03, F-04.
 - **What I did about it:** group sizes are reported beside every figure; minimum group sizes apply (S14); the memo's confidence level reflects the standalone count.
 - **Residual risk:** cannot be fixed by cleaning; it is how the list was built. A fair standalone comparison needs more standalone candidates.
 
+### F-07: Box-office return and audience interest disagree — Severity: High
+
+- **What it is:** franchise films lead on revenue÷budget in both windows; standalone films lead on median vote count (18,870 against 15,494.5 all years).
+- **How I detected it:** the window comparison table reports the leader for each measure separately.
+- **Scale:** sharpest on individual films: The Shawshank Redemption (1.1×) and Fight Club (1.6×) have the lowest multiples among standalones but the two highest vote counts among pre-2000 standalones (31,884 and 33,389).
+- **Effect on the client's number:** the recommendation rests on box-office return as a stand-in for streaming value (S01). On this list, the films with the weakest box-office return include some of the most widely watched.
+- **What I did about it:** both measures are reported; the memo states confidence as moderate and names StreamVault's own viewing data as the evidence that would change the recommendation.
+- **Residual risk:** cannot be resolved from TMDb data.
+
 ### F-01: Six ids listed twice — Severity: High
 
 - **What it is:** 155, 278, 550, 603, 680 and 1891 each appear on two lines.
@@ -40,6 +49,15 @@ Order after the flatten stage: F-06, F-01, F-05, F-02, F-03, F-04.
 - **Effect on the client's number:** if kept, each film counts twice in its group. In groups of 3 to 10 films that can move a median by a whole position, and a repeated franchise entry inflates that bundle's evidence.
 - **What I did about it:** kept the first occurrence, quarantined the rest.
 - **Residual risk:** repeats under different ids (the same film under two TMDb ids) are not caught here; checked after the fetch by title and year (C-20).
+
+### F-08: The average overstates the standalone group — Severity: Medium
+
+- **What it is:** the standalone mean (8.28) is close to the franchise mean (8.54), but the medians are 5.62 against 3.84.
+- **How I detected it:** median beside mean on every row; leave-one-out.
+- **Scale:** one film, The Good, the Bad and the Ugly (1966, 32.4×), lifts the standalone mean; removing it moves the standalone median from 3.84 to 3.24.
+- **Effect on the client's number:** anyone comparing averages would conclude the two groups perform alike.
+- **What I did about it:** the median is the headline (ADR-017).
+- **Residual risk:** none for the direction of the result; the size of the gap depends on the measure chosen.
 
 ### F-05: Five ids that TMDb does not know — Severity: Medium
 
@@ -81,6 +99,10 @@ Order after the flatten stage: F-06, F-01, F-05, F-02, F-03, F-04.
 
 Of the 15 rows that are quarantined or flagged (10 quarantined at load, 5 large ids), 7 sit in lines 2-89 (7 of 88 rows, 8%) and 8 in lines 90-128 (8 of 39 rows, 21%). Lines 90-102 alone hold 7 of 13. Two of the five not-found ids (lines 93 and 99) are in the last block. One reading: the last block was appended from a single source, possibly the studio batch, which would also explain the IMDb id. This is a hypothesis, not a finding: the file has no source column. It matters for Adjoa because, if true, checking that one source's next batch catches most of next year's problems (Q1).
 
+### Observation: pre-2000 standalones have no middle
+
+The eight pre-2000 standalones split into four below 2.7× (Shawshank, Fight Club, GoodFellas, Scarface) and four above 12× (Forrest Gump, Schindler's List, Pulp Fiction, The Good, the Bad and the Ugly). Because of this, the standalone median multiple (3.84) and the median without the top film (3.24) are identical in both windows: the middle pair of multiples is The Departed (3.24) and Memento (4.45) in each. The median vote count (18,870) is also identical in both windows, from a different middle pair: The Prestige (18,490) and Spirited Away (19,250). Verified by hand from the 16 rows.
+
 ## Looked wrong, is not wrong
 
 | Apparent problem | Why it looks wrong | Why it is actually fine |
@@ -89,6 +111,8 @@ Of the 15 rows that are quarantined or flagged (10 quarantined at load, 5 large 
 | Windows line endings in the file | Can be changed silently by tools on other systems | The reader handles both (tested); the file is stored unchanged in the repository |
 | 122 directors for 112 films | More directors than films | Some films have two credited directors; each is a separate talent row, and the films table still has one row per film |
 | Talent key not unique on film id alone (join report) | A join key that repeats looks like a fan-out | The talent table is many rows per film by design; its key is film, person and role, and the join was checked as many-to-one with no rows added |
+| Star Wars at 70.5× and Jaws at 67.2× | Far above every other film; look like units errors | Budgets of $11M and $7M with revenues of $775M and $471M are consistent with each other and with their vote counts; flagged as extremes, kept |
+| Identical standalone medians in both windows | Suggests one window's figures were reused | The pre-2000 standalones split evenly above and below the middle pair; checked by hand |
 
 ## Could not verify
 
