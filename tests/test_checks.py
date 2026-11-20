@@ -182,9 +182,9 @@ def test_c31_fails_when_a_ratio_is_wrong():
     assert not _rank_report(deal_note=t["deal_note"].assign(walkaway_ratio=0.0)).loc["C-31", "passed"]
 
 
-def test_c32_fails_when_a_reliable_person_has_too_few_titles():
+def test_c32_fails_when_a_consistently_above_person_has_too_few_titles():
     t = _rank_tables()
-    forged = t["signal"].assign(signal="reliable", n_titles=2, titles_above=2)
+    forged = t["signal"].assign(signal="consistently above on return", n_titles=2, titles_above=2)
     assert not _rank_report(signal=forged).loc["C-32", "passed"]
 
 

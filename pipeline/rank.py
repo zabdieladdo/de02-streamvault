@@ -165,9 +165,14 @@ def middle_entry_test(films_clean: pd.DataFrame, bundles: pd.DataFrame) -> tuple
     return ep, summary
 
 
-SIGNAL_ORDER = [
-    "reliable", "reliable negative", "mixed", "promising, too little evidence", "too little evidence",
-]
+# Every label names its measure: the return, meaning revenue divided by budget. The vote-count hit
+# rate sits beside it in its own column.
+SIGNAL_ABOVE = "consistently above on return"
+SIGNAL_BELOW = "consistently below on return"
+SIGNAL_MIXED = "mixed on return"
+SIGNAL_PROMISING = "above on return, too little evidence"
+SIGNAL_LITTLE = "too little evidence"
+SIGNAL_ORDER = [SIGNAL_ABOVE, SIGNAL_BELOW, SIGNAL_MIXED, SIGNAL_PROMISING, SIGNAL_LITTLE]
 SIGNAL_COLUMNS = [
     "role", "person_id", "name", "n_films", "n_titles", "titles_above", "hit_rate", "median_title_roi",
     "n_units", "vote_titles_above", "vote_hit_rate", "largest_unit_films", "signal",
@@ -235,8 +240,8 @@ def talent_signal(
     promising = (p["n_titles"] == 2) & (p["titles_above"] == 2)
     p["signal"] = np.select(
         [reliable, negative, enough, promising],
-        ["reliable", "reliable negative", "mixed", "promising, too little evidence"],
-        default="too little evidence",
+        [SIGNAL_ABOVE, SIGNAL_BELOW, SIGNAL_MIXED, SIGNAL_PROMISING],
+        default=SIGNAL_LITTLE,
     )
     p["_order"] = p["signal"].map({name: i for i, name in enumerate(SIGNAL_ORDER)})
     p = p.sort_values(

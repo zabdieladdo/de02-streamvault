@@ -430,13 +430,15 @@ def check_rank_stage(
     add("C-31", "Relative value and walk-away equal their defining ratios", n_bad == 0,
         f"{len(figures)} rows checked against list median {list_median:.4f}; {n_bad} differ")
 
-    reliable = signal[signal["signal"] == "reliable"]
+    from pipeline.rank import SIGNAL_ABOVE
+
+    reliable = signal[signal["signal"] == SIGNAL_ABOVE]
     bad = reliable[
         (reliable["n_titles"] < config.RELIABLE_MIN_TITLES)
         | (reliable["titles_above"] / reliable["n_titles"] < config.RELIABLE_HIT_RATE - 1e-9)
     ]
-    add("C-32", "Every reliable person has enough titles and a high enough hit rate", len(bad) == 0,
-        f"{len(reliable)} reliable; {len(bad)} below the thresholds")
+    add("C-32", "Everyone labelled consistently above on return has enough titles and a high enough hit rate",
+        len(bad) == 0, f"{len(reliable)} labelled consistently above; {len(bad)} below the thresholds")
 
     robust = deal_note[deal_note["candidate"] == "robust candidate"]
     both_windows = bundles["rankable"] & bundles["rankable_2000_on"]

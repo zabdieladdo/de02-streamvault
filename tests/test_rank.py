@@ -232,17 +232,17 @@ def test_each_collection_counts_once_per_person():
     assert s["signal"] == "too little evidence"  # three films, but only two independent titles
 
 
-def test_two_thirds_counts_as_reliable():
+def test_two_thirds_counts_as_consistently_above():
     f = standalone_films([8, 8, 2])  # 2 of 3 titles above 4
     t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
     s = signal_for(f, t).loc[1]
-    assert s["n_titles"] == 3 and s["titles_above"] == 2 and s["signal"] == "reliable"
+    assert s["n_titles"] == 3 and s["titles_above"] == 2 and s["signal"] == "consistently above on return"
 
 
 def test_float_edge_holds_for_larger_groups():
     f = standalone_films([8] * 6 + [2] * 3)  # 6 of 9 = two thirds exactly
     t = [(i, 1, "Ann", "director") for i in range(1, 10)]
-    assert signal_for(f, t).loc[1, "signal"] == "reliable"
+    assert signal_for(f, t).loc[1, "signal"] == "consistently above on return"
 
 
 def test_negative_and_mixed():
@@ -250,17 +250,17 @@ def test_negative_and_mixed():
     t = [(1, 1, "Neg", "director"), (2, 1, "Neg", "director"), (3, 1, "Neg", "director"),
          (4, 2, "Mix", "director"), (5, 2, "Mix", "director"), (6, 2, "Mix", "director"), (7, 2, "Mix", "director")]
     s = signal_for(f, t)
-    assert s.loc[1, "signal"] == "reliable negative" and s.loc[1, "titles_above"] == 0
-    assert s.loc[2, "signal"] == "mixed" and s.loc[2, "n_titles"] == 4 and s.loc[2, "titles_above"] == 2
+    assert s.loc[1, "signal"] == "consistently below on return" and s.loc[1, "titles_above"] == 0
+    assert s.loc[2, "signal"] == "mixed on return" and s.loc[2, "n_titles"] == 4 and s.loc[2, "titles_above"] == 2
 
 
-def test_promising_needs_two_titles_both_above():
+def test_above_on_return_needs_two_titles_both_above():
     f = standalone_films([8, 8, 8, 2])
     t = [(1, 1, "Both", "director"), (2, 1, "Both", "director"),
          (3, 2, "Split", "director"), (4, 2, "Split", "director"),
          (1, 3, "One", "director")]
     s = signal_for(f, t)
-    assert s.loc[1, "signal"] == "promising, too little evidence"
+    assert s.loc[1, "signal"] == "above on return, too little evidence"
     assert s.loc[2, "signal"] == "too little evidence"
     assert s.loc[3, "signal"] == "too little evidence"
 
@@ -288,7 +288,7 @@ def test_vote_hit_rate_sits_beside_the_multiple_hit_rate():
     t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
     s = signal_for(rows, t).loc[1]
     assert s["titles_above"] == 1 and s["vote_titles_above"] == 2 and s["vote_hit_rate"] == pytest.approx(2 / 3)
-    assert s["signal"] == "reliable negative"  # 1 of 3 sits exactly on the negative edge (1 - 2/3)
+    assert s["signal"] == "consistently below on return"  # 1 of 3 sits exactly on the negative edge (1 - 2/3)
 
 
 def test_signal_rows_are_ordered_by_role_signal_then_hit_rate():
@@ -298,7 +298,7 @@ def test_signal_rows_are_ordered_by_role_signal_then_hit_rate():
     t += [(1, 3, "Once", "director")]
     sig = rank.talent_signal(make_talent(t), flagged(f), LIST_MEDIAN, 1000.0)
     assert list(sig["name"]) == ["Weak", "Neg", "Once"]
-    assert list(sig["signal"]) == ["reliable", "reliable negative", "too little evidence"]
+    assert list(sig["signal"]) == ["consistently above on return", "consistently below on return", "too little evidence"]
 
 
 def test_talent_join_keeps_every_row_and_flags_a_repeated_film_id():
@@ -576,3 +576,17 @@ def test_empty_shortlist_in_a_window_is_handled():
     d = rank.window_differences(sl).set_index("list")
     assert set(sl["window"]) == {"all years"} and d.loc["franchise", "names_2000_onward"] == ""
     assert not d.loc["franchise", "same"]
+
+
+def test_signal_labels_name_their_measure_and_the_vote_hit_rate_stays():
+    assert rank.SIGNAL_ORDER == [
+        "consistently above on return", "consistently below on return", "mixed on return",
+        "above on return, too little evidence", "too little evidence",
+    ]
+    f = standalone_films([8, 8, 2, 2, 2, 8])
+    t = ([(i, 1, "Up", "director") for i in (1, 2, 3)] + [(i, 2, "Down", "director") for i in (3, 4, 5)]
+         + [(i, 3, "Mix", "director") for i in (1, 3, 4, 6)] + [(1, 4, "Once", "director"), (2, 4, "Once", "director")])
+    sig = rank.talent_signal(make_talent(t), flagged(f), LIST_MEDIAN, 1000.0)
+    assert set(sig["signal"]) <= set(rank.SIGNAL_ORDER)
+    assert not {"reliable", "reliable negative", "mixed", "promising, too little evidence"} & set(sig["signal"])
+    assert {"hit_rate", "vote_hit_rate"} <= set(sig.columns)

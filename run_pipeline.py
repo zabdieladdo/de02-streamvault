@@ -402,8 +402,8 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
         for w in rank.WINDOWS
     }  # two windows by three lists
     differ = differences.loc[~differences["same"], "list"].tolist()
-    reliable = signal[signal["signal"] == "reliable"]["role"].value_counts()
-    promising = signal[signal["signal"] == "promising, too little evidence"]["role"].value_counts()
+    reliable = signal[signal["signal"] == rank.SIGNAL_ABOVE]["role"].value_counts()
+    promising = signal[signal["signal"] == rank.SIGNAL_PROMISING]["role"].value_counts()
     m = middle.set_index("measure")["value"]
     n_tested = int(m["bundles tested"])
     n_trail = int(m["bundles where middle entries trail the opener"])
@@ -445,8 +445,10 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
           f"median {_num(m['within-bundle median ratio, middle to opener'])}; {n_trail} of {n_tested} "
           "bundles trail the opener")
     print("                note: openers are selected winners (bias)")
-    print(f"  talent        directors: {count(reliable, 'director')} reliable, {count(promising, 'director')} "
-          f"promising | lead actors: {count(reliable, 'lead_actor')} reliable, {count(promising, 'lead_actor')} promising")
+    print(f"  talent        directors: {count(reliable, 'director')} consistently above on return, "
+          f"{count(promising, 'director')} above (too little evidence) | lead actors: "
+          f"{count(reliable, 'lead_actor')} consistently above, {count(promising, 'lead_actor')} above "
+          "(too little evidence)")
     for i, window in enumerate(rank.WINDOWS):  # the two windows
         lead = "  shortlist     " if i == 0 else "                "
         print(f"{lead}{window}: franchise: {_names(shortlist, window, 'franchise')}")
