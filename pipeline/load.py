@@ -259,3 +259,52 @@ def write_flatten_outputs(
     quarantine.to_csv(out_dir / "quarantine.csv", index=False, encoding="utf-8")
     reconciliation.to_csv(out_dir / "reconciliation.csv", index=False, encoding="utf-8")
     checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")
+
+
+# --- stages 4 and 5 outputs ------------------------------------------------------
+
+FLAG_COLUMNS = [
+    "is_released", "budget_suspect_units", "revenue_suspect_units", "units_error_likely",
+    "possible_micro_budget", "budget_usable", "revenue_usable", "roi_usable", "roi_extreme",
+    "in_window_2000", "sequel_like_title", "possible_same_film",
+]
+FILMS_CLEAN_DTYPES = {
+    **FILMS_DTYPES,
+    **{c: "bool" for c in FLAG_COLUMNS},
+    "roi_exclusion_reason": "string", "roi": "float64", "title_year_key": "string",
+}
+
+
+def read_films_clean(path) -> pd.DataFrame:
+    """Read films_clean.csv with explicit types. The exclusion reason keeps "" (usable films)."""
+    df = _read(path, FILMS_CLEAN_DTYPES, keep_empty=("release_date_raw", "roi_exclusion_reason"))
+    df["release_date"] = pd.to_datetime(df["release_date"], format="%Y-%m-%d", errors="coerce")
+    return df
+
+
+def add_usable_multiple_row(reconciliation: pd.DataFrame, n_usable: int) -> pd.DataFrame:
+    """Append the count the measures rest on. No row leaves at stages 4 and 5; this is not a deduction."""
+    row = pd.DataFrame(
+        [{"stage": "Films with a usable revenue÷budget multiple", "rows": n_usable,
+          "delta": pd.NA, "reason": ""}]
+    )
+    row = row.astype({"rows": "int64", "delta": "Int64"})
+    return pd.concat([reconciliation, row], ignore_index=True)
+
+
+def write_clean_outputs(films_clean, review, reconciliation, checks, out_dir=None) -> None:
+    out_dir = out_dir or config.OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    films_clean.to_csv(out_dir / "films_clean.csv", index=False, encoding="utf-8", date_format="%Y-%m-%d")
+    review.to_csv(out_dir / "review_list.csv", index=False, encoding="utf-8")
+    reconciliation.to_csv(out_dir / "reconciliation.csv", index=False, encoding="utf-8")
+    checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")
+
+
+def write_measure_outputs(kpis, comparison, impact, checks, out_dir=None) -> None:
+    out_dir = out_dir or config.OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    kpis.to_csv(out_dir / "kpis.csv", index=False, encoding="utf-8")
+    comparison.to_csv(out_dir / "window_comparison.csv", index=False, encoding="utf-8")
+    impact.to_csv(out_dir / "decision_impact.csv", index=False, encoding="utf-8")
+    checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")

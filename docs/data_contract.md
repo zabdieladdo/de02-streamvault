@@ -1,6 +1,6 @@
 # Data contract: what we use from TMDb
 
-Snapshot of 20 Nov 2026. Source: `GET /movie/{id}` (details) and `GET /movie/{id}/credits` (credits). TMDb's data is maintained by volunteers and comes with no warranty (TMDb API terms, section 6).
+Snapshot of 20 Nov 2026. Source: `GET /movie/{id}` (details) and `GET /movie/{id}/credits` (credits). TMDb's data is maintained by volunteers and comes with no warranty (TMDB API Terms of Use (last updated 20 October 2023), section 6, Disclaimer of Any Warranty; verified).
 
 ## Details
 

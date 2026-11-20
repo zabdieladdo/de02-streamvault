@@ -1,6 +1,6 @@
-# Assumptions register (S01-S23)
+# Assumptions register (S01-S24)
 
-Cite these numbers in every deliverable. Sources: `de02-lab-plan.md` (S01-S20), `de02-round2-answers.md` (S21-S23). Where `de02-final-outline.md` changed one (S14, S11), the current wording is used and the change is noted in the last column.
+Cite these numbers in every deliverable. Sources: `de02-lab-plan.md` (S01-S20), `de02-round2-answers.md` (S21-S23), step 5 (S24). Where `de02-final-outline.md` changed one (S14, S11), the current wording is used and the change is noted in the last column.
 
 **S01 is the marked assumption**: the one whose failure would most change the recommendation.
 
@@ -29,3 +29,4 @@ Cite these numbers in every deliverable. Sources: `de02-lab-plan.md` (S01-S20), 
 | S21 | Budget and revenue are in US dollars | TMDb contribution guidance; the data has no currency field | One film's ROI is off by the exchange rate; check C-17 catches scale errors only | Listed under "could not verify" |
 | S22 | Ids above 7 million are not valid TMDb ids. Confirmed 20 Nov: all five returned "not found" (F-05). | Profile of the id list: 7733901, 8471293, 8471294, 9412887, 9412888 | If some resolve, they join the analysis | Not excluded at load; the API decides and the status is logged |
 | S23 | StreamVault would need a commercial TMDb agreement to use this in production | TMDb terms 1.C and 2.A (commercial use) | Stated as a risk, not a legal finding | Goes in the memo's "could not stand behind" |
+| S24 | A film with 500 or more TMDb votes is too well known to have a genuine budget or revenue under $10,000 | Convention from unsourced research; stated so a reader can apply their own | A real micro-budget film with many votes would be excluded from the multiple; a units error on a lesser-known film would be kept but listed | Added at step 5 (D12, ADR-015). Measured: no film fell in the range |

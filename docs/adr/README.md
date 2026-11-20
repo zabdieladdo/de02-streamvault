@@ -20,8 +20,11 @@ Status values: Accepted, Planned (agreed in `de02-final-outline.md`, ADR not yet
 | [ADR-012](ADR-012-franchise-means-tmdb-collection.md) | A film is a franchise entry when TMDb places it in a collection | Accepted | 2026-11-20 |
 | [ADR-013](ADR-013-talent-scope-directors-and-top-three-actors.md) | The talent table holds directors and the top three billed actors only, separate from films | Accepted | 2026-11-20 |
 | [ADR-014](ADR-014-how-leads-and-directors-are-identified.md) | Lead actors are the three lowest billing positions; directors are crew with the job "Director" | Accepted | 2026-11-20 |
+| [ADR-015](ADR-015-suspect-money-units-flagged-not-corrected.md) | Budgets or revenues of $1 to $10,000 are flagged; with 500 or more votes they are treated as likely units errors; no value is corrected | Accepted | 2026-11-20 |
+| [ADR-016](ADR-016-extremes-kept-and-tested.md) | Extreme multiples are kept and listed; the outlier test removes each group's top film and reports the shift | Accepted | 2026-11-20 |
+| [ADR-017](ADR-017-headline-measure-median-multiple.md) | The headline measure is the median revenue÷budget multiple per group, with the mean, total÷total and median vote count beside it | Accepted | 2026-11-20 |
+| [ADR-018](ADR-018-sequel-like-titles-reviewed-not-reclassified.md) | Standalone films whose titles look like sequels are listed for review, never reclassified automatically | Accepted | 2026-11-20 |
 | — | No numeric time budget from Evalu8; ours is analysis stage under 10 s at 500 titles, fetch timed separately (D1) | Planned | — |
 | — | Revenue or budget of 0 = missing; flag and exclude per metric (D5) | Planned | — |
 | — | `tt0468569` excluded; id resolver is the improvement beyond the brief (D6) | Planned | — |
-| — | Headline: median ROI per group; median vote count as second measure (D7) | Planned | — |
 | — | Minimum 3 films to rank a bundle, 5 for a group conclusion (D9) | Planned | — |

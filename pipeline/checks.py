@@ -1,4 +1,5 @@
 """Run checks C-01 to C-27 and produce one pass/fail table."""
+import numpy as np
 import pandas as pd
 
 from pipeline import config
@@ -88,11 +89,33 @@ def check_load_stage(
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
 
 
-def raise_if_conservation_failed(report: pd.DataFrame) -> None:
-    """C-03 failing means rows were lost or invented; stop the run."""
-    c03 = report.loc[report["check_id"] == "C-03"]
-    if not c03.empty and not bool(c03["passed"].iloc[0]):
-        raise PipelineStopError(f"C-03 failed: {c03['detail'].iloc[0]}")
+def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> None:
+    """A conservation check failing means rows were lost or invented; stop the run.
+
+    C-03 is load, C-03f is fetch and C-03g is flatten. Each is raised from its own stage,
+    after that stage's outputs are on disk.
+    """
+    failed = report[report["check_id"].isin(check_ids) & ~report["passed"]]
+    if not failed.empty:
+        raise PipelineStopError(
+            "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples()),
+            check_id=failed["check_id"].iloc[0],
+        )
+
+
+# Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
+# are written). Every other check is recorded in checks_report.csv and the run continues.
+INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25")
+
+
+def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
+    """Stop the run if a measure-integrity check of `stage` failed, naming the check(s)."""
+    failed = report[
+        report["check_id"].isin(INTEGRITY_CHECKS) & (report["stage"] == stage) & ~report["passed"]
+    ]
+    if not failed.empty:
+        text = "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples())
+        raise PipelineStopError(text, check_id=failed["check_id"].iloc[0])
 
 
 def check_fetch_stage(run) -> pd.DataFrame:
@@ -232,3 +255,108 @@ def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
     add("I-01", "IMDb id cross-reference (information)", True, text)
 
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
+
+
+def check_clean_stage(films_clean: pd.DataFrame, as_of_year: int | None = None) -> pd.DataFrame:
+    """Checks C-15 to C-20 and C-ROI for stage 4; same columns as the other checks."""
+    from datetime import datetime, timezone
+
+    f = films_clean
+    year_limit = as_of_year or datetime.now(timezone.utc).year
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "clean",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    def names(mask, n=8):
+        titles = f.loc[mask, "title"].astype("string").fillna("(no title)").tolist()
+        return ", ".join(titles[:n]) + (f" and {len(titles) - n} more" if len(titles) > n else "")
+
+    n_neg = int(((f["budget"] < 0) | (f["revenue"] < 0)).sum())
+    add("C-15", "No negative budget or revenue", n_neg == 0, f"{n_neg} films with a negative value")
+
+    year = f["release_year"]
+    n_missing = int(year.isna().sum())
+    n_out = int(((year < 1900) | (year > year_limit)).sum())
+    add("C-16", f"Release year between 1900 and {year_limit}", n_out == 0,
+        f"{n_out} outside the range; {n_missing} with no year")
+
+    n_units, n_micro = int(f["units_error_likely"].sum()), int(f["possible_micro_budget"].sum())
+    add("C-17", "Suspect money values counted (review, not a failure)", True,
+        f"{n_units} likely units errors; {n_micro} possible micro-budget films")
+
+    ext = f["roi_extreme"].astype(bool)
+    add("C-18", "Extreme multiples counted (listed, never removed)", True,
+        f"{int(ext.sum())} extreme multiples" + (f": {names(ext)}" if ext.any() else ""))
+
+    n_unreleased = int((~f["is_released"]).sum())
+    n_video = int(f["video"].fillna(False).astype(bool).sum())
+    n_adult = int(f["adult"].fillna(False).astype(bool).sum())
+    add("C-19", "Unreleased, video and adult films counted", True,
+        f"{n_unreleased} not released; {n_video} video; {n_adult} adult")
+
+    n_groups = int(f.loc[f["possible_same_film"], "title_year_key"].nunique())
+    n_seq = int(f["sequel_like_title"].sum())
+    add("C-20", "Possible repeats and sequel-like standalones counted", True,
+        f"{n_groups} possible same-film groups; {n_seq} sequel-like standalones")
+
+    roi = f["roi"]
+    mismatch = int((roi.isna() == f["roi_usable"]).sum())
+    n_inf = int(np.isinf(roi.dropna()).sum())
+    add("C-ROI", "roi is missing exactly where it is not usable", mismatch == 0 and n_inf == 0,
+        f"{mismatch} rows disagree with roi_usable; {n_inf} infinite values")
+
+    return pd.DataFrame(rows)
+
+
+def check_measure_stage(
+    kpis_all: pd.DataFrame,
+    kpis_2000: pd.DataFrame,
+    films_clean: pd.DataFrame,
+    kpis_rerun: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Checks C-21 to C-25 for stage 5. `kpis_rerun` is the same table computed a second time."""
+    from pipeline.metrics import KPI_COLUMNS
+
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "measure",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    both = pd.concat([kpis_all, kpis_2000], ignore_index=True)
+    n_missing = int(both[["n_films", "n_roi_usable"]].isna().sum().sum())
+    add("C-21", "Every KPI row has n_films and n_roi_usable", n_missing == 0 and len(both) > 0,
+        f"{len(both)} KPI rows; {n_missing} missing counts")
+
+    in_window = int(films_clean["in_window_2000"].sum())
+    sums = {"all years": (int(kpis_all["n_films"].sum()), len(films_clean)),
+            "2000 onward": (int(kpis_2000["n_films"].sum()), in_window)}
+    bad = {w: v for w, v in sums.items() if v[0] != v[1]}
+    add("C-22", "Franchise plus standalone films equal the films in each window", not bad,
+        "; ".join(f"{w} {a} of {b}" for w, (a, b) in sums.items()))
+
+    a = kpis_all.set_index("group")["n_films"]
+    b = kpis_2000.set_index("group")["n_films"].reindex(a.index)
+    add("C-23", "2000-onward group sizes never exceed all-years sizes", bool((b <= a).all()),
+        "; ".join(f"{g} {b[g]} of {a[g]}" for g in a.index))
+
+    same_shape = list(kpis_all.columns) == KPI_COLUMNS and list(kpis_2000.columns) == KPI_COLUMNS
+    windows = (set(kpis_all["window"]), set(kpis_2000["window"]))
+    add("C-24", "Both windows come from group_kpis", same_shape and len(windows[0] | windows[1]) == 2,
+        f"windows {sorted(windows[0] | windows[1])}; columns match: {same_shape}")
+
+    if kpis_rerun is not None:
+        same = kpis_rerun.to_csv(index=False) == both.to_csv(index=False)
+        add("C-25", "A second computation gives identical KPI files", same,
+            "identical" if same else "the two runs differ")
+    return pd.DataFrame(rows)

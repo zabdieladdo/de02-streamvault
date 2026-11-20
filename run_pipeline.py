@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline import checks, config, extract, fetch, load, transform, validate
+from pipeline import checks, clean, config, extract, fetch, load, metrics, transform, validate
 from pipeline.errors import PipelineStopError
 from pipeline.redact import redact
 from pipeline.validate import REASON_ORDER
@@ -180,6 +180,7 @@ def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> di
         print(f"  ANALYSIS INCOMPLETE: {row}")
     print(f"  time         {seconds:.1f} s")
     print(f"Outputs written to {_display_path(out_dir)}/")
+    checks.raise_if_conservation_failed(report2, ("C-03f",))  # after the outputs are on disk
     return {"run": run, "fetched_ids": fetched_ids, "quarantine": quarantine, "report": report}
 
 
@@ -253,11 +254,146 @@ def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> No
     print(f"  imdb check   {report3.loc[report3['check_id'] == 'I-01', 'detail'].iloc[0]}")
     print(f"  checks       {n_passed} passed, {n_failed} failed")
     print(f"  time         {seconds:.2f} s")
+    checks.raise_if_conservation_failed(report3, ("C-03g",))  # after the outputs are on disk
+    return {"films": films, "quarantine": quarantine, "reconciliation": reconciliation, "report": report}
+
+
+def _num(value, fmt="{:.2f}") -> str:
+    return "n/a" if pd.isna(value) else fmt.format(value)
+
+
+def _stage4(stage3: dict, record: dict, out_dir: Path) -> dict:
+    t0 = time.perf_counter()
+    films_clean = clean.add_flags(stage3["films"])
+    review = clean.build_review_list(films_clean)
+    report4 = checks.check_clean_stage(films_clean)
+    report = pd.concat([stage3["report"], report4], ignore_index=True)
+    n_usable = int(films_clean["roi_usable"].sum())
+    reconciliation = load.add_usable_multiple_row(stage3["reconciliation"], n_usable)
+    load.write_clean_outputs(films_clean, review, reconciliation, report, out_dir=out_dir)
+    seconds = time.perf_counter() - t0
+
+    f = films_clean
+    reasons = f["roi_exclusion_reason"].value_counts()
+    flags = {
+        "units_error_likely": int(f["units_error_likely"].sum()),
+        "possible_micro_budget": int(f["possible_micro_budget"].sum()),
+        "roi_extreme": int(f["roi_extreme"].sum()),
+        "sequel_like_title": int(f["sequel_like_title"].sum()),
+        "possible_same_film": int(f["possible_same_film"].sum()),
+    }
+    in_window = f[f["in_window_2000"]]
+    n_franchise_w = int(in_window["is_franchise"].sum())
+    no_year = int(f["release_year"].isna().sum())
+    n_passed, n_failed = int(report4["passed"].sum()), int((~report4["passed"]).sum())
+
+    record.update(
+        {
+            "roi_usable": n_usable,
+            "roi_excluded_by_reason": {k: int(v) for k, v in reasons.items() if k},
+            "flag_counts": flags,
+            "films_in_2000_window": len(in_window),
+            "films_without_year": no_year,
+            "checks_passed": record["checks_passed"] + n_passed,
+            "checks_failed": record["checks_failed"] + n_failed,
+        }
+    )
+    record["seconds"]["clean"] = round(seconds, 4)
+
+    excluded = ", ".join(
+        f"{int(reasons.get(key, 0))} {label}" for key, label in (
+            ("not released", "not released"), ("budget not reported", "budget 0"),
+            ("revenue not reported", "revenue 0"), ("likely units error", "units error"))
+    )
+    print()
+    print("Stage 4: clean and flag")
+    print(f"  usable multiple   {n_usable} of {len(f)} films  (excluded: {excluded})")
+    print(f"  review list       {flags['units_error_likely']} units | {flags['possible_micro_budget']} "
+          f"micro-budget | {flags['roi_extreme']} extreme multiples | {flags['sequel_like_title']} "
+          f"sequel-like standalones | {flags['possible_same_film']} possible same film")
+    print(f"  2000 onward       {len(in_window)} films ({n_franchise_w} franchise, "
+          f"{len(in_window) - n_franchise_w} standalone); {no_year} without a year")
+    print(f"  checks            {n_passed} passed, {n_failed} failed")
+    checks.raise_if_integrity_failed(report4, "clean")  # after the outputs are on disk
+    return {"films_clean": films_clean, "report": report, "quarantine": stage3["quarantine"],
+            "films": stage3["films"]}
+
+
+def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> None:
+    t0 = time.perf_counter()
+    f = stage4["films_clean"]
+    kpis_all, kpis_2000 = metrics.window_kpis(f)
+    kpis = pd.concat([kpis_all, kpis_2000], ignore_index=True)
+    again = pd.concat(metrics.window_kpis(f), ignore_index=True)  # C-25: a second computation
+    comparison = metrics.compare_windows(kpis_all, kpis_2000)
+    i01 = transform.imdb_crossref(stage4["films"], stage4["quarantine"][stage4["quarantine"]["stage"] == "load"])
+    impact = metrics.decision_impact(f, stage4["quarantine"], i01)
+    report5 = checks.check_measure_stage(kpis_all, kpis_2000, f, kpis_rerun=again)
+    report = pd.concat([stage4["report"], report5], ignore_index=True)
+    load.write_measure_outputs(kpis, comparison, impact, report, out_dir=out_dir)
+    seconds = time.perf_counter() - t0
+
+    disagree = metrics.disagreeing_measures(comparison)
+    cannot = metrics.incomparable_measures(comparison)
+    changed = impact[impact["leader_changes"]]
+    changes = [f"{d} ({w})" for d, w in zip(changed["decision"], changed["window"])]
+    n_passed, n_failed = int(report5["passed"].sum()), int((~report5["passed"]).sum())
+    record.update(
+        {
+            "windows_disagree": bool(disagree),
+            "windows_disagree_measures": disagree,
+            "decision_changes_leader": changes,
+            "checks_passed": record["checks_passed"] + n_passed,
+            "checks_failed": record["checks_failed"] + n_failed,
+        }
+    )
+    record["seconds"]["measure"] = round(seconds, 4)
+
+    print()
+    print("Stage 5: measures")
+    print(f"  {'window':<12}  {'group':<11}{'films':>6}{'usable':>8}{'median':>8}{'mean':>8}"
+          f"{'w/o top':>9}{'total/total':>13}{'votes(med)':>12}")
+    for row in kpis.itertuples(index=False):  # a loop over the four printed rows, not over films
+        print(f"  {row.window:<12}  {row.group:<11}{row.n_films:>6}{row.n_roi_usable:>8}"
+              f"{_num(row.median_roi):>8}{_num(row.mean_roi):>8}{_num(row.median_roi_without_top):>9}"
+              f"{_num(row.aggregate_roi):>13}{_num(row.median_vote_count, '{:.0f}'):>12}")
+    if disagree:
+        print(f"  WINDOWS DISAGREE: {', '.join(disagree)}")
+    elif cannot:
+        print(f"  windows       cannot compare on {', '.join(cannot)} (a group has no usable films)")
+    else:
+        print("  windows       agree on all measures")
+    if changes:
+        for d, w in zip(changed["decision"], changed["window"]):
+            print(f"  decisions     {d} changes the leader in {w}")
+    else:
+        print("  decisions     none changes the leader")
+    print(f"  checks        {n_passed} passed, {n_failed} failed")
+    print(f"  time          clean {record['seconds']['clean']:.2f} s | measure {seconds:.2f} s")
     if args.limit:
         print(f"Outputs written to {_display_path(out_dir)}/ "
               f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
     else:
         print(f"Outputs written to {_display_path(out_dir)}/")
+    checks.raise_if_integrity_failed(report5, "measure")  # after the outputs are on disk
+
+
+STATUS_FILE = "run_status.txt"
+
+
+def _clear_old_outputs(out_dir: Path) -> None:
+    """Delete the CSV files and the status file from an earlier run, so a stopped run cannot show
+    stale results. Keeps run_log.jsonl and, for a full run, the limited/ folder."""
+    if out_dir.is_dir():
+        for path in [*out_dir.glob("*.csv"), out_dir / STATUS_FILE]:
+            path.unlink(missing_ok=True)
+
+
+def _write_status(out_dir: Path, stopped_at: str | None, stage: int) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    text = "complete " + now if stopped_at is None else f"stopped at {stopped_at}, stage {stage}, {now}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / STATUS_FILE).write_text(text + chr(10), encoding="utf-8")
 
 
 def main(argv=None, session=None) -> int:
@@ -270,17 +406,28 @@ def main(argv=None, session=None) -> int:
     out_dir = config.LIMITED_OUT_DIR if args.limit else config.OUT_DIR
     record: dict = {"seconds": {}, "stopped": None, "output_dir": _display_path(out_dir)}
     code = 0
+    stage, stopped_at = 0, None
+    _clear_old_outputs(out_dir)
     try:
+        stage = 1
         stage1 = _stage1(record, out_dir)
+        stage = 2
         stage2 = _stage2(stage1, args, session, key, record, out_dir)
-        _stage3(stage1, stage2, args, record, out_dir)
+        stage = 3
+        stage3 = _stage3(stage1, stage2, args, record, out_dir)
+        stage = 4
+        stage4 = _stage4(stage3, record, out_dir)
+        stage = 5
+        _stage5(stage4, args, record, out_dir)
     except PipelineStopError as exc:
         message = redact(str(exc), key)
         print(f"STOPPED: {message}")
         record["stopped"] = message
+        stopped_at = exc.check_id or "an error (see the message and run_log.jsonl)"
         code = 1
     if "input_sha256" in record:  # stage 1 got far enough to log
         load.append_run_log(record)
+    _write_status(out_dir, stopped_at, stage)
     return code
 
 
