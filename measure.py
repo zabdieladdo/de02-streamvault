@@ -12,12 +12,16 @@ from pathlib import Path
 from pipeline import config, measurement
 from pipeline.errors import PipelineStopError
 
-DEFAULTS = {"warm_runs": 10}
+DEFAULTS = {"warm_runs": 10, "cold_copies": 3, "cold_followups": 4}
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the pipeline's run time.")
     parser.add_argument("--warm-runs", type=int, default=DEFAULTS["warm_runs"], help="warm runs on the real snapshot")
+    parser.add_argument("--cold-copies", type=int, default=DEFAULTS["cold_copies"],
+                        help="fresh copies of the responses for the cold-start test")
+    parser.add_argument("--cold-followups", type=int, default=DEFAULTS["cold_followups"],
+                        help="warm runs after each cold run")
     parser.add_argument("--out", type=Path, default=config.REPO_ROOT / "out" / "measurement",
                         help="where the results are written")
     return parser.parse_args(argv)
@@ -26,7 +30,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """Run the measurements, write out/measurement/ and print the summary."""
     args = parse_args(argv)
-    options = {"warm_runs": args.warm_runs}
+    options = {"warm_runs": args.warm_runs, "cold_copies": args.cold_copies, "cold_followups": args.cold_followups}
     try:
         with tempfile.TemporaryDirectory(prefix="streamvault_measure_") as tmp:
             tables = measurement.run_all(options, Path(tmp))

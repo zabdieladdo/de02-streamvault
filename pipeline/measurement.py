@@ -21,7 +21,7 @@ from pipeline import config
 from pipeline.errors import PipelineStopError
 
 STAGE_KEYS = ["stage1_load_ids", "fetch", "flatten", "clean", "measure", "rank"]
-TIMING_COLUMNS = ["scenario", "size", "run", "state", "wall_s", *STAGE_KEYS, "stage_sum_s"]
+TIMING_COLUMNS = ["scenario", "size", "run", "state", "wall_s", *STAGE_KEYS, "stage_sum_s", "copy"]
 SUMMARY_COLUMNS = ["scenario", "size", "state", "metric", "runs", "median_s", "p95_s", "worst_s"]
 BUDGET_SECONDS = 10  # S05: a full cached run, 500 titles
 BUDGET_TITLES = 500
@@ -63,12 +63,16 @@ def run_once(raw_dir: Path, ids_file: Path, out_dir: Path) -> dict:
 
 
 def measure_runs(
-    scenario: str, size: int, raw_dir: Path, ids_file: Path, out_dir: Path, states: list[str]
+    scenario: str, size: int, raw_dir: Path, ids_file: Path, out_dir: Path, states: list[str], copy: int = 1,
+    first_run: int = 1,
 ) -> list[dict]:
-    """One timed run per entry of `states` ("cold" or "warm"), in order, on the same folders."""
+    """One timed run per entry of `states` ("cold" or "warm"), in order, on the same folders.
+
+    `copy` says which fresh copy of the responses the runs belong to (1 when there is only one).
+    """
     rows = []
-    for number, state in enumerate(states, start=1):  # a loop over runs: each is a separate process
-        rows.append({"scenario": scenario, "size": size, "run": number, "state": state,
+    for number, state in enumerate(states, start=first_run):  # a loop over runs: each is a separate process
+        rows.append({"scenario": scenario, "size": size, "run": number, "state": state, "copy": copy,
                      **run_once(raw_dir, ids_file, out_dir)})
     return rows
 
@@ -83,6 +87,24 @@ def warm_runs(work: Path, runs: int = 10) -> list[dict]:
     """Warm runs of the full cached pipeline on the real snapshot (a copy of it), back to back."""
     raw = copy_snapshot(work / "warm_raw")
     return measure_runs("real snapshot", REAL_SIZE, raw, config.INPUT_IDS, work / "warm_out", ["warm"] * runs)
+
+
+def cold_starts(work: Path, copies: int = 3, warm_after: int = 4) -> list[dict]:
+    """Cold-start runs on purpose: a fresh copy of the saved responses, one run (cold), then more (warm).
+
+    Repeated on `copies` separate fresh copies. "Cold" means the first run on files this process tree has
+    not read before; the operating system may still hold freshly copied files in memory, so what the run
+    shows is reported as measured, not assumed.
+    """
+    rows = []
+    for number in range(1, copies + 1):  # each copy is made and run in turn
+        raw = copy_snapshot(work / f"cold_raw_{number}")
+        states = ["cold"] + ["warm"] * warm_after
+        rows += measure_runs(
+            "real snapshot, fresh copy", REAL_SIZE, raw, config.INPUT_IDS, work / f"cold_out_{number}", states,
+            copy=number, first_run=(number - 1) * len(states) + 1,
+        )
+    return rows
 
 
 def summarize(runs: pd.DataFrame) -> pd.DataFrame:
@@ -129,5 +151,7 @@ def format_report(summary: pd.DataFrame) -> str:
 def run_all(options: dict, work: Path) -> dict[str, pd.DataFrame]:
     """Every measurement the options ask for, in the temporary folder `work`; the tables to write."""
     rows = warm_runs(work, options["warm_runs"])
+    if options["cold_copies"]:
+        rows += cold_starts(work, options["cold_copies"], options["cold_followups"])
     runs = pd.DataFrame(rows, columns=TIMING_COLUMNS)
     return {"timing_runs.csv": runs, "timing_summary.csv": summarize(runs)}

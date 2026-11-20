@@ -102,7 +102,7 @@ def test_warm_runs_are_all_warm_numbered_and_leave_the_real_snapshot_alone(tmp_p
 def test_the_command_writes_the_two_tables_and_never_touches_the_real_outputs(tmp_path, capsys):
     real_out = tree_hash(REPO / "out", "*.csv")
     real_raw = tree_hash(REPO / "data" / "raw")
-    assert measure.main(["--warm-runs", "2", "--out", str(tmp_path / "result")]) == 0
+    assert measure.main(["--warm-runs", "2", "--cold-copies", "0", "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     summary = pd.read_csv(tmp_path / "result" / "timing_summary.csv")
     assert list(runs.columns) == measurement.TIMING_COLUMNS and len(runs) == 2
@@ -116,7 +116,7 @@ def test_the_command_stops_with_a_message_when_a_run_fails(tmp_path, monkeypatch
         raise measurement.MeasurementError("A measured run failed (exit 1); not timed.")
 
     monkeypatch.setattr(measurement, "run_once", broken)
-    assert measure.main(["--warm-runs", "1", "--out", str(tmp_path / "result")]) == 1
+    assert measure.main(["--warm-runs", "1", "--cold-copies", "0", "--out", str(tmp_path / "result")]) == 1
     assert "STOPPED: A measured run failed" in capsys.readouterr().out
     assert not (tmp_path / "result").exists()
 
@@ -125,3 +125,54 @@ def test_copying_the_snapshot_copies_every_file(tmp_path):
     copy = measurement.copy_snapshot(tmp_path / "copy")
     assert tree_hash(copy) == tree_hash(REPO / "data" / "raw")
     shutil.rmtree(copy)
+
+
+# --- cold starts -----------------------------------------------------------------------------------------
+
+@pytest.fixture(scope="module")
+def cold(tmp_path_factory):
+    """One cold-start measurement (2 fresh copies, 1 warm run after each), shared by the tests below."""
+    work = tmp_path_factory.mktemp("cold")
+    made, real_copy = [], measurement.copy_snapshot
+
+    def recording(destination):
+        made.append(destination)
+        return real_copy(destination)
+
+    measurement.copy_snapshot = recording
+    try:
+        before = tree_hash(REPO / "data" / "raw")
+        rows = measurement.cold_starts(work, copies=2, warm_after=1)
+        untouched = tree_hash(REPO / "data" / "raw") == before
+    finally:
+        measurement.copy_snapshot = real_copy
+    return {"rows": rows, "made": made, "work": work, "untouched": untouched}
+
+
+def test_each_cold_start_uses_a_fresh_copy_and_runs_cold_then_warm(cold):
+    rows, made = cold["rows"], cold["made"]
+    assert len(made) == 2 and made[0] != made[1] and not made[0].samefile(made[1])
+    assert [r["state"] for r in rows] == ["cold", "warm", "cold", "warm"]
+    assert [r["copy"] for r in rows] == [1, 1, 2, 2]
+    assert [r["run"] for r in rows] == [1, 2, 3, 4]
+    assert {r["scenario"] for r in rows} == {"real snapshot, fresh copy"}
+    assert cold["untouched"]  # the real snapshot is only ever read
+
+
+def test_cold_and_warm_runs_are_summarised_separately(cold):
+    summary = measurement.summarize(pd.DataFrame(cold["rows"], columns=measurement.TIMING_COLUMNS))
+    wall = summary[summary["metric"] == "wall_s"].set_index("state")
+    assert wall.loc["cold", "runs"] == 2 and wall.loc["warm", "runs"] == 2
+    assert (wall["worst_s"] >= wall["median_s"]).all()
+
+
+def test_a_cold_run_is_still_fully_cached_and_makes_no_request(cold):
+    log = (cold["work"] / "cold_out_1" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[0]
+    assert '"fetch_network_calls": 0' in log and '"fetch_cached": 229' in log  # the first, cold run of copy 1
+
+
+def test_the_command_runs_the_cold_start_test_when_asked(tmp_path):
+    assert measure.main(["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1",
+                         "--out", str(tmp_path / "result")]) == 0
+    runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
+    assert list(runs["state"]) == ["warm", "cold", "warm"] and list(runs["copy"]) == [1, 1, 1]
