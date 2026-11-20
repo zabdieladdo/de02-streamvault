@@ -67,11 +67,30 @@ If more than 5% of films fail to fetch, the run completes but prints `ANALYSIS I
 python -m pytest -q
 ```
 
+## Development
+
+Code style is checked with [ruff](https://docs.astral.sh/ruff/). It is optional: it is not in `requirements.txt` and the pipeline does not need it. To run it:
+
+```powershell
+pip install ruff
+ruff check .
+```
+
+The settings are in `ruff.toml`. Lines may be up to 120 characters. The usual limit of 88 would flag about 700 lines and reflow them into more, shorter lines (long messages, table rows and test fixtures), with no gain for a reader. The `explore/` folder is not checked.
+
+The test suite passes with warnings turned into errors, so a deprecated or unsafe pandas call fails the build:
+
+```powershell
+python -m pytest -q -W error
+```
+
+`pytest.ini` puts the project root on the path, so the tests run from the repository root with no further setup.
+
 ## Documentation
 
 - `docs/findings.md`: data problems found and where every id ended up
 - `docs/adr/`: decisions and the alternatives rejected
-- `docs/assumptions.md`: assumptions S01-S24
+- `docs/assumptions.md`: assumptions S01-S26
 
 ## Attribution
 
