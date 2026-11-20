@@ -144,7 +144,7 @@ CSV_OUTPUTS = (
     "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
     "films_clean.csv", "review_list.csv", "kpis.csv", "window_comparison.csv", "decision_impact.csv",
     "bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv", "shortlist.csv",
-    "deal_note.csv",
+    "deal_note.csv", "window_differences.csv",
 )
 
 
@@ -443,11 +443,13 @@ def test_stage6_summary_and_outputs(tmp_path, capsys):
     assert "franchise: Collection 1, Collection 2, Collection 3" in text
     assert "standalone: S0, S1, S2, S3, S4" in text and "audience pick: S7" in text
     assert "deal note     Collection 1: 1.12" in text  # bundle median 9 over list median 8
-    assert "SHORTLIST SHORT" not in text and "note: openers are selected winners" in text
+    assert "SHORTLIST SHORT (all years)" not in text and "note: openers are selected winners" in text
     for name in ("bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv",
-                 "shortlist.csv", "deal_note.csv", "checks_report.csv"):
+                 "shortlist.csv", "deal_note.csv", "window_differences.csv", "checks_report.csv"):
         assert (tmp_path / name).is_file(), name
-    assert record["shortlist_sizes"] == {"franchise": 3, "standalone": 5, "audience pick": 1}
+    assert record["shortlist_sizes"]["all years"] == {"franchise": 3, "standalone": 5, "audience pick": 1}
+    assert set(record["shortlist_sizes"]) == {"all years", "2000 onward"}
+    assert isinstance(record["shortlist_differs_between_windows"], list)
     assert record["strongest_bundle"] == "Collection 1" and record["bundles_rankable"] == 4
     assert {"list_median_roi", "list_median_votes", "bundles_tested_middle", "talent_reliable",
             "relative_value"} <= set(record)
@@ -457,7 +459,8 @@ def test_stage6_summary_and_outputs(tmp_path, capsys):
 def test_short_shortlist_is_announced_and_the_run_continues(env, capsys):
     assert run_pipeline.main([], session=fake()) == 0  # these fixture films have no money: nothing to rank
     text = capsys.readouterr().out
-    assert "SHORTLIST SHORT: 0 of 3 franchise" in text and "SHORTLIST SHORT: 0 of 5 standalone" in text
+    assert "SHORTLIST SHORT (all years): 0 of 3 franchise" in text
+    assert "SHORTLIST SHORT (2000 onward): 0 of 5 standalone" in text
     assert text.rstrip().splitlines()[-1].startswith("Outputs written to ")
     out = env.tmp_path / "out"
     assert (out / "shortlist.csv").is_file() and (out / "deal_note.csv").is_file()
@@ -482,3 +485,41 @@ def test_c29_stop_reaches_the_exit_code_and_status(env, capsys, monkeypatch):
     _stops_on(env, capsys, "C-29", ("bundles.csv", "talent_signal.csv", "shortlist.csv", "checks_report.csv"))
     status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
     assert status.startswith("stopped at C-29, stage 6, ")
+
+
+def test_stage6_prints_the_two_windows_and_where_they_differ(tmp_path, capsys):
+    from tests.test_rank import window_fixture
+    from tests.conftest import make_talent
+    from pipeline import metrics
+
+    f = window_fixture()
+    tables = {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+              "report": pd.DataFrame(), "talent": make_talent([(100, 1, "A", "director")])}
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)  # a difference is reported, not raised
+    text = capsys.readouterr().out
+    assert "all years: franchise: Collection 1, Collection 2" in text
+    assert "2000 onward: franchise: Collection 2, Collection 1" in text
+    lines = text.splitlines()
+    assert "  SHORTLIST DIFFERS BETWEEN WINDOWS: franchise, standalone" in lines  # on its own line
+    assert record["shortlist_differs_between_windows"] == ["franchise", "standalone"]
+    diff = pd.read_csv(tmp_path / "window_differences.csv")
+    assert dict(zip(diff["list"], diff["same"])) == {"franchise": False, "standalone": False, "audience pick": True}
+    sl = pd.read_csv(tmp_path / "shortlist.csv")
+    assert set(sl["window"]) == {"all years", "2000 onward"}
+
+
+def test_stage6_says_nothing_when_the_windows_agree(tmp_path, capsys):
+    from tests.conftest import make_talent
+    from tests.test_rank import money, bundle_rows, flagged
+    from pipeline import metrics
+
+    rows = bundle_rows(1, [2, 3, 4], years=[2001, 2004, 2008]) + [
+        {"tmdb_id": 50 + i, "title": f"s{i}", "year": 2010 + i, "votes": 100 + i, **money(9 - i)} for i in range(7)]
+    f = flagged(rows)
+    tables = {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+              "report": pd.DataFrame(), "talent": make_talent([(1, 1, "A", "director")])}
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)
+    assert "SHORTLIST DIFFERS" not in capsys.readouterr().out
+    assert record["shortlist_differs_between_windows"] == []

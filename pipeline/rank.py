@@ -20,18 +20,16 @@ def reference_values(films_clean: pd.DataFrame) -> dict:
 BUNDLE_COLUMNS = [
     "collection_id", "collection_name", "n_on_list", "n_roi_usable", "median_roi", "mean_roi",
     "aggregate_roi", "weakest_roi", "weakest_title", "median_vote_count", "first_year", "last_year",
-    "straddles_2000", "n_2000_on", "median_roi_2000_on", "thin_2000_on", "rankable", "bundle_rank",
-    "vote_rank", "relative_value", "walkaway_ratio",
+    "straddles_2000", "n_2000_on", "n_roi_2000_on", "median_roi_2000_on", "thin_2000_on", "rankable",
+    "bundle_rank", "rankable_2000_on", "bundle_rank_2000_on", "vote_rank", "relative_value",
+    "walkaway_ratio",
 ]
+WINDOW_ALL, WINDOW_2000 = "all years", "2000 onward"
+WINDOWS = (WINDOW_ALL, WINDOW_2000)
 
 
-def build_bundles(films_clean: pd.DataFrame) -> pd.DataFrame:
-    """One row per collection, from the franchise films on the list.
-
-    Every figure is based on the films of the collection that are on the list; the full bundle a
-    studio sells may hold more films.
-    """
-    ref = reference_values(films_clean)
+def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
+    """The bundle measures and ranks for the films given: all films, or only those in one window."""
     f = films_clean[films_clean["is_franchise"].astype(bool) & films_clean["collection_id"].notna()]
     usable = f["roi_usable"].astype(bool)
     f = f.sort_values("tmdb_id").assign(
@@ -80,6 +78,28 @@ def build_bundles(films_clean: pd.DataFrame) -> pd.DataFrame:
     b["relative_value"] = b["median_roi"] / ref["list_median_roi"]
     b["walkaway_ratio"] = b["weakest_roi"] / ref["list_median_roi"]
     b[["first_year", "last_year"]] = b[["first_year", "last_year"]].astype("Int64")
+    b["collection_id"] = b["collection_id"].astype("int64")
+    return b
+
+
+def build_bundles(films_clean: pd.DataFrame) -> pd.DataFrame:
+    """One row per collection, from the franchise films on the list, ranked in both windows.
+
+    Every figure is based on the films of the collection that are on the list; the full bundle a
+    studio sells may hold more films. The 2000-onward rank comes from the same function applied
+    to the films released in 2000 or later, so it uses only their multiples and votes.
+    """
+    ref = reference_values(films_clean)
+    b = _bundle_table(films_clean, ref)
+    recent = _bundle_table(films_clean[films_clean["in_window_2000"].astype(bool)], ref)
+    recent = recent[["collection_id", "n_roi_usable", "rankable", "bundle_rank"]].rename(
+        columns={"n_roi_usable": "n_roi_2000_on", "rankable": "rankable_2000_on",
+                 "bundle_rank": "bundle_rank_2000_on"}
+    )
+    b = b.merge(recent, on="collection_id", how="left", validate="one_to_one")
+    b["n_roi_2000_on"] = b["n_roi_2000_on"].fillna(0).astype("int64")
+    b["rankable_2000_on"] = b["rankable_2000_on"].astype("boolean").fillna(False).astype(bool)
+    b["bundle_rank_2000_on"] = b["bundle_rank_2000_on"].astype("Int64")
     b = b[BUNDLE_COLUMNS].sort_values(["bundle_rank", "collection_id"], na_position="last")
     return b.reset_index(drop=True)
 
@@ -226,8 +246,9 @@ def talent_signal(
     return p[SIGNAL_COLUMNS].reset_index(drop=True)
 
 
+SHORTLIST_LISTS = ("franchise", "standalone", "audience pick")
 SHORTLIST_COLUMNS = [
-    "list", "rank", "name", "collection_id", "tmdb_id", "multiple", "rank_by_multiple",
+    "window", "list", "rank", "name", "collection_id", "tmdb_id", "multiple", "rank_by_multiple",
     "vote_count_or_median", "vote_rank", "release_years", "figure_2000_on", "n_on_list", "weakest", "reason",
 ]
 
@@ -257,8 +278,18 @@ def _years(first: pd.Series, last: pd.Series) -> pd.Series:
     return a.where(first == last, a + "-" + b)
 
 
-def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.DataFrame:
-    """Top bundles, top standalones and one audience pick, each with a plain-sentence reason."""
+def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: str = WINDOW_ALL) -> pd.DataFrame:
+    """Top bundles, top standalones and one audience pick for one window, each with a reason.
+
+    For "2000 onward" everything is recomputed from the films released in 2000 or later: bundles are
+    ranked on those films alone, standalones come only from that window, and every reason says so.
+    """
+    if window == WINDOW_2000:
+        films = films_clean[films_clean["in_window_2000"].astype(bool)]
+        bundles = _bundle_table(films, reference_values(films_clean))
+        scope, prefix = " from 2000 onward", "2000 onward: "
+    else:
+        window, films, scope, prefix = WINDOW_ALL, films_clean, "", "All years: "
     parts = []
 
     # franchise: rankable bundles, best median multiple first
@@ -266,33 +297,43 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
     fr = bundles[bundles["rankable"] & (bundles["bundle_rank"] <= config.SHORTLIST_FRANCHISE_N)]
     fr = fr.sort_values("bundle_rank")
     recent = fr["median_roi_2000_on"]
-    recent_text = np.where(
-        recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
+    common = (
+        prefix + "Median " + _times(fr["median_roi"]) + " across " + fr["n_on_list"].astype(str)
+        + " films" + scope + " on the list (" + _ordinal(fr["bundle_rank"]) + " of " + str(n_rankable)
     )
+    if window == WINDOW_2000:
+        reason = (
+            common + " bundles rankable from 2000 on); weakest film from 2000 onward " + fr["weakest_title"]
+            + " at " + _times(fr["weakest_roi"]) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes among them."
+        )
+    else:
+        recent_text = np.where(
+            recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
+        )
+        reason = (
+            common + " rankable bundles); weakest film " + fr["weakest_title"] + " at "
+            + _times(fr["weakest_roi"]) + "; " + pd.Series(recent_text, index=fr.index) + "; "
+            + _ordinal(fr["vote_rank"]) + " by audience votes."
+        )
     parts.append(
         pd.DataFrame(
             {
-                "list": "franchise", "rank": np.arange(1, len(fr) + 1), "name": fr["collection_name"],
-                "collection_id": fr["collection_id"], "tmdb_id": pd.array([pd.NA] * len(fr), dtype="Int64"),
+                "window": window, "list": "franchise", "rank": np.arange(1, len(fr) + 1),
+                "name": fr["collection_name"], "collection_id": fr["collection_id"],
+                "tmdb_id": pd.array([pd.NA] * len(fr), dtype="Int64"),
                 "multiple": fr["median_roi"], "rank_by_multiple": fr["bundle_rank"],
                 "vote_count_or_median": fr["median_vote_count"], "vote_rank": fr["vote_rank"],
                 "release_years": _years(fr["first_year"], fr["last_year"]),
                 "figure_2000_on": recent.astype("object").where(recent.notna(), "pre-2000"),
                 "n_on_list": fr["n_on_list"],
                 "weakest": fr["weakest_title"] + " " + _times(fr["weakest_roi"]),
-                "reason": (
-                    "Median " + _times(fr["median_roi"]) + " across " + fr["n_on_list"].astype(str)
-                    + " films on the list (" + _ordinal(fr["bundle_rank"]) + " of " + str(n_rankable)
-                    + " rankable bundles); weakest film " + fr["weakest_title"] + " at "
-                    + _times(fr["weakest_roi"]) + "; " + pd.Series(recent_text, index=fr.index) + "; "
-                    + _ordinal(fr["vote_rank"]) + " by audience votes."
-                ),
+                "reason": reason,
             }
         )
     )
 
-    # standalones: usable films, best multiple first (ties: more votes, then film id)
-    s = films_clean[~films_clean["is_franchise"].astype(bool) & films_clean["roi_usable"].astype(bool)].copy()
+    # standalones: usable films in the window, best multiple first (ties: more votes, then film id)
+    s = films[~films["is_franchise"].astype(bool) & films["roi_usable"].astype(bool)].copy()
     s["roi"] = s["roi"].astype("float64")
     s["votes"] = s["vote_count"].astype("float64")
     s = s.sort_values(["roi", "votes", "tmdb_id"], ascending=[False, False, True]).reset_index(drop=True)
@@ -306,7 +347,7 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
     def standalone_rows(rows: pd.DataFrame, list_name: str, reason: pd.Series) -> pd.DataFrame:
         return pd.DataFrame(
             {
-                "list": list_name, "rank": np.arange(1, len(rows) + 1), "name": rows["title"],
+                "window": window, "list": list_name, "rank": np.arange(1, len(rows) + 1), "name": rows["title"],
                 "collection_id": pd.array([pd.NA] * len(rows), dtype="Int64"), "tmdb_id": rows["tmdb_id"],
                 "multiple": rows["roi"], "rank_by_multiple": rows["rank_by_multiple"],
                 "vote_count_or_median": rows["votes"], "vote_rank": rows["vote_rank"],
@@ -321,9 +362,9 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
     parts.append(
         standalone_rows(
             top, "standalone",
-            _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of " + str(n_stand)
-            + " standalones); released " + top["release_years"] + "; " + _ordinal(top["vote_rank"]) + " of "
-            + str(n_stand) + " by audience votes.",
+            prefix + _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of "
+            + str(n_stand) + " standalones" + scope + "); released " + top["release_years"] + "; "
+            + _ordinal(top["vote_rank"]) + " of " + str(n_stand) + " by audience votes.",
         )
     )
 
@@ -333,8 +374,8 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
     parts.append(
         standalone_rows(
             rest, "audience pick",
-            "Most-voted standalone not in the top " + top_label + ": " + _thousands(rest["votes"]) + " votes ("
-            + _ordinal(rest["vote_rank"]) + " of " + str(n_stand) + ") but " + _times(rest["roi"])
+            prefix + "Most-voted standalone" + scope + " not in the top " + top_label + ": " + _thousands(rest["votes"])
+            + " votes (" + _ordinal(rest["vote_rank"]) + " of " + str(n_stand) + ") but " + _times(rest["roi"])
             + " its budget (" + _ordinal(rest["rank_by_multiple"]) + " of " + str(n_stand) + ").",
         )
     )
@@ -344,6 +385,35 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
         return pd.DataFrame(columns=SHORTLIST_COLUMNS)
     out[["rank", "rank_by_multiple", "vote_rank"]] = out[["rank", "rank_by_multiple", "vote_rank"]].astype("int64")
     return out[SHORTLIST_COLUMNS]
+
+
+def build_shortlists(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.DataFrame:
+    """The shortlist for every window, from the same function."""
+    parts = [build_shortlist(bundles, films_clean, w) for w in WINDOWS]  # the two windows
+    return pd.concat([p for p in parts if len(p)], ignore_index=True) if any(len(p) for p in parts) else parts[0]
+
+
+DIFFERENCE_COLUMNS = ["list", "names_all_years", "names_2000_onward", "names_in_both", "same"]
+
+
+def window_differences(shortlist: pd.DataFrame) -> pd.DataFrame:
+    """For each list, the names in each window, the names in both, and whether the lists are identical.
+
+    `same` is true only when both windows hold the same names in the same order.
+    """
+    rows = []
+    for list_name in SHORTLIST_LISTS:  # a fixed list of three, not a loop over films
+        pick = shortlist[shortlist["list"] == list_name].sort_values("rank")
+        a = pick.loc[pick["window"] == WINDOW_ALL, "name"].astype(str).reset_index(drop=True)
+        b = pick.loc[pick["window"] == WINDOW_2000, "name"].astype(str).reset_index(drop=True)
+        both = a[a.isin(b)]
+        rows.append(
+            {
+                "list": list_name, "names_all_years": " | ".join(a), "names_2000_onward": " | ".join(b),
+                "names_in_both": " | ".join(both), "same": bool(a.equals(b)),
+            }
+        )
+    return pd.DataFrame(rows, columns=DIFFERENCE_COLUMNS)
 
 
 DEAL_NOTE_COLUMNS = [

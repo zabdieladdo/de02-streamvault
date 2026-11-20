@@ -114,22 +114,28 @@ def test_fetch_check_conservation_and_stale_cache(fetch_env):
 
 # --- stage 6 checks -----------------------------------------------------------------
 
-def _rank_tables():
+def _rank_tables(films=None):
     from pipeline import metrics, rank
     from tests.conftest import make_talent
     from tests.test_rank import shortlist_fixture
 
-    f = shortlist_fixture()
+    f = shortlist_fixture() if films is None else films
     ref = rank.reference_values(f)
     bundles = rank.build_bundles(f)
     ep, _ = rank.middle_entry_test(f, bundles)
     talent = make_talent([(1, 7, "Ann", "director"), (2, 7, "Ann", "director"), (3, 7, "Ann", "director")])
     signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
-    shortlist = rank.build_shortlist(bundles, f)
+    shortlist = rank.build_shortlists(bundles, f)
     kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
     deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"])
     return dict(bundles=bundles, films_clean=f, entry_positions=ep, signal=signal, shortlist=shortlist,
                 deal_note=deal, talent=talent, ref=ref)
+
+
+def _rank_report_for(tables):
+    from pipeline import checks as c
+
+    return c.check_rank_stage(**tables).set_index("check_id")
 
 
 def _rank_report(**changes):
@@ -192,3 +198,17 @@ def test_only_the_integrity_checks_stop_the_run():
     for check_id in ("C-28", "C-29", "C-30", "C-31"):
         with pytest.raises(PipelineStopError, match=check_id):
             c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
+
+
+def test_c26_checks_each_window_against_its_own_usable_count():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    in_2000 = t["shortlist"][(t["shortlist"]["window"] == "2000 onward") & (t["shortlist"]["list"] == "franchise")]
+    assert len(in_2000) == 2  # two bundles are rankable from 2000, so the 2000 window lists them
+    assert _rank_report_for(t).loc["C-26", "passed"]
+    # enough usable films over all years, but too few from 2000: only the 2000 rows may trip
+    thin = t["bundles"].assign(n_roi_2000_on=1)
+    assert not _rank_report_for({**t, "bundles": thin}).loc["C-26", "passed"]
+    too_few_overall = t["bundles"].assign(n_roi_usable=1)  # now the all-years rows trip instead
+    assert not _rank_report_for({**t, "bundles": too_few_overall}).loc["C-26", "passed"]

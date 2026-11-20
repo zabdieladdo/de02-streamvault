@@ -372,14 +372,14 @@ def test_reason_text_carries_the_row_figures():
     sl = rank.build_shortlist(rank.build_bundles(f), f)
     fr = sl[sl["list"] == "franchise"].iloc[0]
     assert fr["reason"] == (
-        "Median 9.0× across 3 films on the list (1st of 4 rankable bundles); weakest film 1-1 at 8.0×; "
+        "All years: Median 9.0× across 3 films on the list (1st of 4 rankable bundles); weakest film 1-1 at 8.0×; "
         "9.5× from 2000 onward; 1st by audience votes."
     )
     st = sl[sl["list"] == "standalone"].iloc[2]
-    assert st["reason"] == "16.0× its budget (3rd of 8 standalones); released 2012; 6th of 8 by audience votes."
+    assert st["reason"] == "All years: 16.0× its budget (3rd of 8 standalones); released 2012; 6th of 8 by audience votes."
     pick = sl[sl["list"] == "audience pick"].iloc[0]
     assert pick["reason"] == (
-        "Most-voted standalone not in the top five: 8,000 votes (1st of 8) but 6.0× its budget (8th of 8)."
+        "All years: Most-voted standalone not in the top five: 8,000 votes (1st of 8) but 6.0× its budget (8th of 8)."
     )
 
 
@@ -440,3 +440,109 @@ def test_deal_note_flags_a_thin_recent_figure():
 def test_no_rankable_bundle_gives_no_deal_note():
     dn, _ = deal_for(bundle_rows(1, [2, 3]))
     assert len(dn) == 0 and list(dn.columns) == rank.DEAL_NOTE_COLUMNS
+
+
+# --- both windows -------------------------------------------------------------------
+
+def window_fixture():
+    """Bundle A is best over all years (an old hit) but weak since 2000; bundle B is the reverse."""
+    rows = bundle_rows(1, [30, 30, 30, 2, 2], years=[1980, 1983, 2001, 2004, 2008], base_id=100, votes=900)
+    rows += bundle_rows(2, [6, 7, 8], years=[2002, 2005, 2009], base_id=200, votes=500)
+    rows += bundle_rows(3, [4, 5], years=[2003, 2006], base_id=300)  # only two films: never rankable
+    rows += [{"tmdb_id": 400 + i, "title": f"old{i}", "year": 1990 + i, **money(20 - i)} for i in range(3)]
+    rows += [{"tmdb_id": 500 + i, "title": f"new{i}", "year": 2010 + i, "votes": 100 * (i + 1), **money(10 - i)}
+             for i in range(6)]
+    return flagged(rows)
+
+
+def test_bundles_get_a_rank_for_films_from_2000():
+    b = rank.build_bundles(window_fixture()).set_index("collection_id")
+    assert b.loc[1, "bundle_rank"] == 1 and b.loc[2, "bundle_rank"] == 2
+    assert b.loc[2, "bundle_rank_2000_on"] == 1 and b.loc[1, "bundle_rank_2000_on"] == 2
+    assert b.loc[1, "rankable_2000_on"] and b.loc[1, "n_roi_2000_on"] == 3 and b.loc[1, "median_roi_2000_on"] == 2
+
+
+def test_rank_for_2000_is_missing_when_too_few_films_are_from_2000():
+    b = rank.build_bundles(window_fixture()).set_index("collection_id")
+    assert not b.loc[3, "rankable"] and not b.loc[3, "rankable_2000_on"]
+    assert pd.isna(b.loc[3, "bundle_rank_2000_on"])
+
+
+def test_rankable_overall_but_not_from_2000():
+    rows = bundle_rows(1, [5, 6, 7], years=[1980, 1990, 2005]) + bundle_rows(2, [2, 3, 4], base_id=10)
+    b = rank.build_bundles(flagged(rows)).set_index("collection_id")
+    assert b.loc[1, "rankable"] and b.loc[1, "n_roi_2000_on"] == 1
+    assert not b.loc[1, "rankable_2000_on"] and pd.isna(b.loc[1, "bundle_rank_2000_on"])
+    assert b.loc[2, "rankable_2000_on"] and b.loc[2, "bundle_rank_2000_on"] == 1
+
+
+def test_a_collection_with_no_film_from_2000_has_no_window_rank():
+    b = rank.build_bundles(flagged(bundle_rows(1, [2, 3, 4], years=[1980, 1983, 1986]))).set_index("collection_id")
+    assert b.loc[1, "n_roi_2000_on"] == 0 and not b.loc[1, "rankable_2000_on"]
+    assert pd.isna(b.loc[1, "bundle_rank_2000_on"])
+
+
+def test_tie_in_the_2000_window_goes_to_more_votes():
+    rows = bundle_rows(1, [2, 3, 4], votes=100) + bundle_rows(2, [2, 3, 4], votes=900, base_id=10)
+    b = rank.build_bundles(flagged(rows)).set_index("collection_id")
+    assert b.loc[2, "bundle_rank_2000_on"] == 1 and b.loc[1, "bundle_rank_2000_on"] == 2
+
+
+def test_shortlist_for_2000_uses_only_films_from_2000():
+    f = window_fixture()
+    b = rank.build_bundles(f)
+    sl = rank.build_shortlist(b, f, "2000 onward")
+    assert set(sl["window"]) == {"2000 onward"}
+    fr = sl[sl["list"] == "franchise"]
+    assert list(fr["collection_id"]) == [2, 1] and list(fr["multiple"]) == [7, 2]  # medians of films from 2000
+    assert "old0" not in set(sl["name"])  # a pre-2000 standalone is outside this window
+    stand = sl[sl["list"] == "standalone"]
+    assert len(stand) == 5 and stand["release_years"].astype(int).min() >= 2010
+
+
+def test_every_reason_states_its_window():
+    f = window_fixture()
+    sl = rank.build_shortlists(rank.build_bundles(f), f)
+    assert set(sl["window"]) == {"all years", "2000 onward"}
+    starts = sl["reason"].str[:12]
+    assert starts[sl["window"] == "all years"].str.startswith("All years: ").all()
+    assert starts[sl["window"] == "2000 onward"].str.startswith("2000 onward:").all()
+    row = sl[(sl["window"] == "2000 onward") & (sl["list"] == "franchise")].iloc[0]
+    assert "films from 2000 onward on the list (1st of 2 bundles rankable from 2000 on)" in row["reason"]
+
+
+def test_audience_pick_in_the_2000_window_is_outside_that_windows_top_five():
+    f = window_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f, "2000 onward")
+    pick = sl[sl["list"] == "audience pick"].iloc[0]
+    top = set(sl.loc[sl["list"] == "standalone", "tmdb_id"])
+    assert pick["tmdb_id"] not in top and pick["name"] == "new5" and "from 2000 onward" in pick["reason"]
+
+
+def test_the_windows_can_give_different_shortlists():
+    f = window_fixture()
+    sl = rank.build_shortlists(rank.build_bundles(f), f)
+    d = rank.window_differences(sl).set_index("list")
+    assert list(d.index) == ["franchise", "standalone", "audience pick"]
+    assert not d.loc["franchise", "same"] and not d.loc["standalone", "same"]
+    assert d.loc["franchise", "names_all_years"] == "Collection 1 | Collection 2"
+    assert d.loc["franchise", "names_2000_onward"] == "Collection 2 | Collection 1"
+    assert d.loc["franchise", "names_in_both"] == "Collection 1 | Collection 2"  # same names, different order
+    assert "old0" in d.loc["standalone", "names_all_years"] and "old0" not in d.loc["standalone", "names_2000_onward"]
+
+
+def test_identical_windows_are_reported_as_the_same():
+    rows = bundle_rows(1, [2, 3, 4], years=[2001, 2004, 2008]) + [
+        {"tmdb_id": 50 + i, "title": f"s{i}", "year": 2010 + i, "votes": 100 + i, **money(9 - i)} for i in range(7)]
+    f = flagged(rows)
+    d = rank.window_differences(rank.build_shortlists(rank.build_bundles(f), f))
+    assert d["same"].all()
+    assert list(d.columns) == rank.DIFFERENCE_COLUMNS
+
+
+def test_empty_shortlist_in_a_window_is_handled():
+    f = flagged(bundle_rows(1, [2, 3, 4], years=[1980, 1983, 1986]))
+    sl = rank.build_shortlists(rank.build_bundles(f), f)
+    d = rank.window_differences(sl).set_index("list")
+    assert set(sl["window"]) == {"all years"} and d.loc["franchise", "names_2000_onward"] == ""
+    assert not d.loc["franchise", "same"]

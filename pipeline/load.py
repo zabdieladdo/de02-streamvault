@@ -310,14 +310,15 @@ def write_measure_outputs(kpis, comparison, impact, checks, out_dir=None) -> Non
     checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")
 
 
-def write_rank_outputs(bundles, entry_positions, middle_summary, signal, shortlist, deal_note, checks,
-                       out_dir=None) -> None:
+def write_rank_outputs(bundles, entry_positions, middle_summary, signal, shortlist, deal_note, differences,
+                       checks, out_dir=None) -> None:
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     tables = {
         "bundles.csv": bundles, "entry_positions.csv": entry_positions,
         "middle_entry_test.csv": middle_summary, "talent_signal.csv": signal,
-        "shortlist.csv": shortlist, "deal_note.csv": deal_note, "checks_report.csv": checks,
+        "shortlist.csv": shortlist, "deal_note.csv": deal_note, "window_differences.csv": differences,
+        "checks_report.csv": checks,
     }
     for name, table in tables.items():
         table.to_csv(out_dir / name, index=False, encoding="utf-8", date_format="%Y-%m-%d")

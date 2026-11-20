@@ -385,14 +385,17 @@ def check_rank_stage(
             }
         )
 
-    sizes = shortlist["list"].value_counts()
-    franchise_ids = shortlist.loc[shortlist["list"] == "franchise", "collection_id"].astype("int64")
-    used = bundles[bundles["collection_id"].isin(franchise_ids)]
-    too_small = int((used["n_roi_usable"] < config.MIN_BUNDLE_FOR_RANKING).sum())
-    add("C-26", "Every shortlisted bundle has enough usable films", too_small == 0,
-        f"{too_small} shortlisted bundles below {config.MIN_BUNDLE_FOR_RANKING} usable films; shortlist: "
-        f"{int(sizes.get('franchise', 0))} franchise, {int(sizes.get('standalone', 0))} standalone, "
-        f"{int(sizes.get('audience pick', 0))} audience pick")
+    fr = shortlist[shortlist["list"] == "franchise"].astype({"collection_id": "int64"})
+    fr = fr.merge(bundles[["collection_id", "n_roi_usable", "n_roi_2000_on"]], on="collection_id", how="left")
+    usable = np.where(fr["window"] == "2000 onward", fr["n_roi_2000_on"], fr["n_roi_usable"])
+    too_small = int((usable < config.MIN_BUNDLE_FOR_RANKING).sum())
+    counts = shortlist.groupby(["window", "list"]).size()
+    text = "; ".join(
+        f"{w}: " + ", ".join(f"{int(counts.get((w, k), 0))} {k}" for k in ("franchise", "standalone", "audience pick"))
+        for w in ("all years", "2000 onward")
+    )
+    add("C-26", "Every shortlisted bundle has enough usable films in its window", too_small == 0,
+        f"{too_small} shortlisted bundles below {config.MIN_BUNDLE_FOR_RANKING} usable films; shortlist {text}")
 
     n_franchise = int(films_clean["is_franchise"].astype(bool).sum())
     n_bundled = int(bundles["n_on_list"].sum())

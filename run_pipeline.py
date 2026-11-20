@@ -375,8 +375,9 @@ def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> dict:
     return {"films_clean": f, "kpis": kpis, "report": report, "talent": stage4["talent"]}
 
 
-def _names(shortlist: pd.DataFrame, which: str) -> str:
-    names = shortlist.loc[shortlist["list"] == which, "name"].astype(str)
+def _names(shortlist: pd.DataFrame, window: str, which: str) -> str:
+    pick = shortlist[(shortlist["window"] == window) & (shortlist["list"] == which)]
+    names = pick["name"].astype(str)
     return ", ".join(names) if len(names) else "none"
 
 
@@ -387,15 +388,20 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     bundles = rank.build_bundles(f)
     entry_positions, middle = rank.middle_entry_test(f, bundles)
     signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
-    shortlist = rank.build_shortlist(bundles, f)
+    shortlist = rank.build_shortlists(bundles, f)
+    differences = rank.window_differences(shortlist)
     deal = rank.deal_note_figures(bundles, stage5["kpis"], ref["list_median_roi"])
     report6 = checks.check_rank_stage(bundles, f, entry_positions, signal, shortlist, deal, talent, ref)
     report = pd.concat([stage5["report"], report6], ignore_index=True)
-    load.write_rank_outputs(bundles, entry_positions, middle, signal, shortlist, deal, report, out_dir=out_dir)
+    load.write_rank_outputs(bundles, entry_positions, middle, signal, shortlist, deal, differences, report,
+                            out_dir=out_dir)
     seconds = time.perf_counter() - t0
 
-    sizes = {k: int(v) for k, v in shortlist["list"].value_counts().items()}
-    sizes = {k: sizes.get(k, 0) for k in ("franchise", "standalone", "audience pick")}
+    sizes = {
+        w: {k: int(((shortlist["window"] == w) & (shortlist["list"] == k)).sum()) for k in rank.SHORTLIST_LISTS}
+        for w in rank.WINDOWS
+    }  # two windows by three lists
+    differ = differences.loc[~differences["same"], "list"].tolist()
     reliable = signal[signal["signal"] == "reliable"]["role"].value_counts()
     promising = signal[signal["signal"] == "promising, too little evidence"]["role"].value_counts()
     m = middle.set_index("measure")["value"]
@@ -411,6 +417,7 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
             "bundles_tested_middle": n_tested,
             "talent_reliable": {k: int(v) for k, v in reliable.items()},
             "shortlist_sizes": sizes,
+            "shortlist_differs_between_windows": differ,
             "strongest_bundle": None if deal.empty else str(deal.loc[0, "collection_name"]),
             "relative_value": None if deal.empty else round(float(deal.loc[0, "relative_value"]), 4),
             "checks_passed": record["checks_passed"] + n_passed,
@@ -435,13 +442,19 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     print("                note: openers are selected winners (bias)")
     print(f"  talent        directors: {count(reliable, 'director')} reliable, {count(promising, 'director')} "
           f"promising | lead actors: {count(reliable, 'lead_actor')} reliable, {count(promising, 'lead_actor')} promising")
-    print(f"  shortlist     franchise: {_names(shortlist, 'franchise')}")
-    print(f"                standalone: {_names(shortlist, 'standalone')}")
-    print(f"                audience pick: {_names(shortlist, 'audience pick')}")
-    if sizes["franchise"] < config.SHORTLIST_FRANCHISE_N:
-        print(f"  SHORTLIST SHORT: {sizes['franchise']} of {config.SHORTLIST_FRANCHISE_N} franchise")
-    if sizes["standalone"] < config.SHORTLIST_STANDALONE_N:
-        print(f"  SHORTLIST SHORT: {sizes['standalone']} of {config.SHORTLIST_STANDALONE_N} standalone")
+    for i, window in enumerate(rank.WINDOWS):  # the two windows
+        lead = "  shortlist     " if i == 0 else "                "
+        print(f"{lead}{window}: franchise: {_names(shortlist, window, 'franchise')}")
+        print(f"                {'':<{len('all years')}}  standalone: {_names(shortlist, window, 'standalone')}")
+        print(f"                {'':<{len('all years')}}  audience pick: {_names(shortlist, window, 'audience pick')}")
+        if sizes[window]["franchise"] < config.SHORTLIST_FRANCHISE_N:
+            print(f"  SHORTLIST SHORT ({window}): {sizes[window]['franchise']} of "
+                  f"{config.SHORTLIST_FRANCHISE_N} franchise")
+        if sizes[window]["standalone"] < config.SHORTLIST_STANDALONE_N:
+            print(f"  SHORTLIST SHORT ({window}): {sizes[window]['standalone']} of "
+                  f"{config.SHORTLIST_STANDALONE_N} standalone")
+    if differ:
+        print(f"  SHORTLIST DIFFERS BETWEEN WINDOWS: {', '.join(differ)}")
     if deal.empty:
         print("  deal note     no rankable bundle")
     else:
