@@ -259,3 +259,19 @@ def test_decision_impact_does_not_change_its_inputs():
     before = films.copy()
     metrics.decision_impact(films, quarantine_frame(repeats=[1]), NO_I01)
     pd.testing.assert_frame_equal(films, before)
+
+
+def test_duplicated_film_id_stops_the_decision_impact_cleanly():
+    from pipeline.errors import PipelineStopError
+
+    films = clean.add_flags(make_films(GROUP))
+    doubled = pd.concat([films, films.iloc[[0, 1]]], ignore_index=True)
+    with pytest.raises(PipelineStopError, match="C-10 failed") as caught:
+        metrics.decision_impact(doubled, quarantine_frame(repeats=[1]), NO_I01)
+    assert caught.value.check_id == "C-10"
+    assert "1, 2" in str(caught.value) and "one row per film" in str(caught.value)
+
+
+def test_unique_film_ids_still_build_the_decision_impact():
+    films = clean.add_flags(make_films(GROUP))
+    assert len(metrics.decision_impact(films, quarantine_frame(), NO_I01)) == 20

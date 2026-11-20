@@ -571,3 +571,22 @@ def test_c33_stops_the_run_after_writing_outputs(tmp_path, monkeypatch):
     with pytest.raises(PipelineStopError, match="C-33 failed"):
         run_pipeline._stage6(_window_tables(), {"seconds": {}, "checks_passed": 0, "checks_failed": 0}, tmp_path)
     assert (tmp_path / "deal_note.csv").is_file() and (tmp_path / "bundles.csv").is_file()
+
+
+def test_a_repeated_film_id_stops_stage_5_naming_c10(env, capsys, monkeypatch):
+    real = run_pipeline.clean.add_flags
+
+    def repeated_film(films):
+        out = real(films)
+        return pd.concat([out, out.iloc[[0]]], ignore_index=True)
+
+    monkeypatch.setattr(run_pipeline.clean, "add_flags", repeated_film)
+    assert run_pipeline.main([], session=fake()) == 1  # a clean stop, not a raw MergeError
+    text = capsys.readouterr().out
+    assert "STOPPED: C-10 failed" in text and "MergeError" not in text
+    out = env.tmp_path / "out"
+    assert (out / "films_clean.csv").is_file()  # stage 4 finished and wrote its outputs
+    assert not (out / "kpis.csv").exists()  # the stage 5 tables were never built
+    assert (out / "run_status.txt").read_text(encoding="utf-8").startswith("stopped at C-10, stage 5, ")
+    record = json.loads((out / "run_log.jsonl").read_text().splitlines()[-1])
+    assert "C-10" in record["stopped"]

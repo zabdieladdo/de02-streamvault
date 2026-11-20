@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 
 from pipeline import config
+from pipeline.errors import PipelineStopError
 
 GROUPS = ("franchise", "standalone")
 ALL_YEARS, FROM_2000 = "all years", "2000 onward"
@@ -159,6 +160,14 @@ def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_map
     The baseline applies the minimum group size (S14), so "leader" is blank where a group is too small.
     """
     f = films_clean
+    repeated = f.loc[f["tmdb_id"].duplicated(keep=False), "tmdb_id"].drop_duplicates()
+    if len(repeated):  # the repeats variant joins on film id, which must name one film
+        ids = ", ".join(str(i) for i in repeated.head(5))
+        raise PipelineStopError(
+            f"C-10 failed: film id {ids} appears more than once in the films table "
+            "(C-10 requires one row per film), so the decision-impact table cannot be built",
+            check_id="C-10",
+        )
     budget = f["budget"].astype("float64").fillna(0)
     revenue = f["revenue"].astype("float64").fillna(0)
     released, units = f["is_released"], f["units_error_likely"]
