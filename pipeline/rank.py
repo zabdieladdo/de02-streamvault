@@ -82,3 +82,64 @@ def build_bundles(films_clean: pd.DataFrame) -> pd.DataFrame:
     b[["first_year", "last_year"]] = b[["first_year", "last_year"]].astype("Int64")
     b = b[BUNDLE_COLUMNS].sort_values(["bundle_rank", "collection_id"], na_position="last")
     return b.reset_index(drop=True)
+
+
+ENTRY_COLUMNS = [
+    "collection_id", "collection_name", "tmdb_id", "title", "release_date", "order_in_bundle",
+    "position", "roi", "ratio_to_opener",
+]
+OPENER_BIAS_NOTE = (
+    "Openers are selected winners: a sequel is usually made because the first film did well, "
+    "so openers beating middle entries is partly built in."
+)
+
+
+def middle_entry_test(films_clean: pd.DataFrame, bundles: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Within each rankable bundle, compare middle entries and the latest film with the opener.
+
+    Films are ordered by release date, then film id. The main test is the within-bundle ratio to the
+    opener, with each bundle counted once; pooled medians by position are shown for display.
+    """
+    ids = bundles.loc[bundles["rankable"], "collection_id"].astype("int64")
+    f = films_clean[films_clean["roi_usable"].astype(bool) & films_clean["collection_id"].isin(ids)]
+    f = f.assign(collection_id=f["collection_id"].astype("int64"), roi=f["roi"].astype("float64"))
+    f = f.sort_values(["collection_id", "release_date", "tmdb_id"]).reset_index(drop=True)
+    g = f.groupby("collection_id")
+    order = g.cumcount() + 1
+    size = g["tmdb_id"].transform("size")
+    position = np.select([order == 1, order == size], ["opener", "latest"], default="middle")
+    opener_roi = g["roi"].transform("first")
+
+    ep = pd.DataFrame(
+        {
+            "collection_id": f["collection_id"], "collection_name": f["collection_name"].astype("object"),
+            "tmdb_id": f["tmdb_id"], "title": f["title"].astype("object"),
+            "release_date": f["release_date"], "order_in_bundle": order.astype("int64"),
+            "position": position, "roi": f["roi"],
+            "ratio_to_opener": (f["roi"] / opener_roi).where(order > 1),
+        }
+    )[ENTRY_COLUMNS]
+
+    pooled = ep.groupby("position")["roi"].median()
+    middle_ratio = ep[ep["position"] == "middle"].groupby("collection_id")["ratio_to_opener"].median()
+    latest_ratio = ep[ep["position"] == "latest"].groupby("collection_id")["ratio_to_opener"].median()
+    n_trail = int((middle_ratio < 1).sum())
+    n_tested = int(ep["collection_id"].nunique())
+    rows = [
+        ("bundles tested", float(n_tested), "rankable bundles (3 or more usable films)"),
+        ("middle films tested", float((ep["position"] == "middle").sum()), ""),
+        ("pooled median multiple: opener", pooled.get("opener", np.nan), "display only: long series weigh more here"),
+        ("pooled median multiple: middle", pooled.get("middle", np.nan), "display only"),
+        ("pooled median multiple: latest", pooled.get("latest", np.nan), "display only"),
+        ("within-bundle median ratio, middle to opener", middle_ratio.median(),
+         "main test: the median over bundles of each bundle median middle-to-opener ratio; each bundle counts once"),
+        ("within-bundle median ratio, latest to opener", latest_ratio.median(),
+         "median over bundles of the latest-to-opener ratio"),
+        ("bundles where middle entries trail the opener", float(n_trail),
+         f"{n_trail} of {n_tested} bundles have a median middle ratio below 1"),
+        ("share of bundles where middle entries trail the opener",
+         n_trail / n_tested if n_tested else np.nan, ""),
+        ("note", np.nan, OPENER_BIAS_NOTE),
+    ]
+    summary = pd.DataFrame(rows, columns=["measure", "value", "note"])
+    return ep, summary
