@@ -302,6 +302,74 @@ def verdict(summary: pd.DataFrame) -> str:
     return f"{label}: {'met' if met else 'not met'}, cold {cold_s:.1f} s, warm {warm_s:.1f} s"
 
 
+# --- row-wise against vectorised -----------------------------------------------------------------------
+# The pipeline never loops over rows. To show what that is worth, the usability flags and the multiple are
+# computed here the row-wise way (apply with axis=1), written only for this measurement and used nowhere
+# else, and timed against the pipeline's own vectorised code.
+
+VECTOR_COLUMNS = ["is_released", "units_error_likely", "budget_usable", "revenue_usable", "roi_usable", "roi"]
+VECTORISATION_COLUMNS = ["method", "films", "runs", "median_s", "p95_s", "worst_s", "times_faster"]
+ROWWISE, VECTORISED = "row by row (apply, axis=1)", "vectorised (the pipeline)"
+
+
+def rowwise_flags(films: pd.DataFrame) -> pd.DataFrame:
+    """The same flags and multiple as clean.add_flags, computed one row at a time. Measurement only."""
+
+    def one(row: pd.Series) -> pd.Series:
+        budget = 0.0 if pd.isna(row["budget"]) else float(row["budget"])
+        revenue = 0.0 if pd.isna(row["revenue"]) else float(row["revenue"])
+        votes = 0.0 if pd.isna(row["vote_count"]) else float(row["vote_count"])
+        released = bool(pd.notna(row["status"]) and row["status"] == "Released")
+        suspect = (1 <= budget <= config.SMALL_MONEY_THRESHOLD) or (1 <= revenue <= config.SMALL_MONEY_THRESHOLD)
+        units = suspect and votes >= config.UNITS_ERROR_VOTE_THRESHOLD
+        usable = budget > 0 and (revenue > 0 and released) and not units
+        return pd.Series(
+            {
+                "is_released": released, "units_error_likely": units, "budget_usable": budget > 0,
+                "revenue_usable": revenue > 0 and released, "roi_usable": usable,
+                "roi": revenue / budget if usable else np.nan,
+            }
+        )
+
+    return films.apply(one, axis=1)  # the row-wise version, on purpose
+
+
+def vectorised_flags(films: pd.DataFrame) -> pd.DataFrame:
+    """The pipeline's own flags and multiple (clean.add_flags), for the same columns."""
+    from pipeline import clean
+
+    return clean.add_flags(films)[VECTOR_COLUMNS]
+
+
+def same_flags(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    """True when both versions give identical flags and the same multiples (missing where not usable)."""
+    flags = [c for c in VECTOR_COLUMNS if c != "roi"]
+    equal_flags = all((a[c].astype(bool).to_numpy() == b[c].astype(bool).to_numpy()).all() for c in flags)
+    equal_roi = np.allclose(a["roi"].astype("float64"), b["roi"].astype("float64"), rtol=1e-12, equal_nan=True)
+    return bool(equal_flags and equal_roi)
+
+
+def vectorisation_runs(films: pd.DataFrame, runs: int = 5) -> pd.DataFrame:
+    """Time both versions `runs` times on the same films; stop if they do not give the same answer."""
+    if not same_flags(rowwise_flags(films), vectorised_flags(films)):
+        raise MeasurementError("The row-wise and vectorised versions disagree; their times mean nothing.")
+    timings = {ROWWISE: [], VECTORISED: []}
+    for _ in range(runs):  # alternate, so neither version always runs first
+        for method, function in ((ROWWISE, rowwise_flags), (VECTORISED, vectorised_flags)):
+            started = time.perf_counter()
+            function(films)
+            timings[method].append(time.perf_counter() - started)
+    rows = [
+        {"method": method, "films": len(films), "runs": runs, "median_s": percentile(values, 50),
+         "p95_s": percentile(values, 95), "worst_s": max(values)}
+        for method, values in timings.items()
+    ]
+    table = pd.DataFrame(rows)
+    slow = table.loc[table["method"] == ROWWISE, "median_s"].iloc[0]
+    table["times_faster"] = slow / table["median_s"]
+    return table[VECTORISATION_COLUMNS]
+
+
 # --- the report and the command -----------------------------------------------------------------
 
 def format_report(summary: pd.DataFrame) -> str:
@@ -320,17 +388,33 @@ def format_report(summary: pd.DataFrame) -> str:
     return "\n".join(lines)
 
 
+def format_vectorisation(table: pd.DataFrame) -> str:
+    """The median time of each version on the same films, and how many times faster the vectorised one is."""
+    films, runs = int(table["films"].iloc[0]), int(table["runs"].iloc[0])
+    lines = [f"Row by row against vectorised, {films} films, median of {runs} runs"]
+    for row in table.to_dict("records"):  # the two versions
+        lines.append(f"  {row['method']:<30}{row['median_s']:>9.4f} s{row['times_faster']:>8.1f}x")
+    return chr(10).join(lines)
+
+
 def run_all(options: dict, work: Path) -> dict[str, pd.DataFrame]:
     """Every measurement the options ask for, in the temporary folder `work`; the tables to write."""
     rows = warm_runs(work, options["warm_runs"])
     if options["cold_copies"]:
         rows += cold_starts(work, options["cold_copies"], options["cold_followups"])
+    outputs: dict[int, Path] = {}
     if options["sizes"]:
-        growth, _ = growth_runs(work, options["sizes"], options["growth_followups"])
+        growth, outputs = growth_runs(work, options["sizes"], options["growth_followups"])
         rows += growth
     runs = pd.DataFrame(rows, columns=TIMING_COLUMNS)
     summary = summarize(runs)
     tables = {"timing_runs.csv": runs, "timing_summary.csv": summary}
     if options["sizes"]:
         tables["growth.csv"] = growth_table(summary)
+    if options["vector_runs"] and outputs:
+        from pipeline import load
+
+        largest = max(outputs)  # the biggest synthetic size, 5,000 by default
+        films = load.read_films(outputs[largest] / "films.csv")
+        tables["vectorisation.csv"] = vectorisation_runs(films, options["vector_runs"])
     return tables

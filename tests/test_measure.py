@@ -102,7 +102,7 @@ def test_warm_runs_are_all_warm_numbered_and_leave_the_real_snapshot_alone(tmp_p
 def test_the_command_writes_the_two_tables_and_never_touches_the_real_outputs(tmp_path, capsys):
     real_out = tree_hash(REPO / "out", "*.csv")
     real_raw = tree_hash(REPO / "data" / "raw")
-    only_warm = ["--warm-runs", "2", "--cold-copies", "0", "--sizes"]
+    only_warm = ["--warm-runs", "2", "--cold-copies", "0", "--sizes", "--vector-runs", "0"]
     assert measure.main([*only_warm, "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     summary = pd.read_csv(tmp_path / "result" / "timing_summary.csv")
@@ -173,8 +173,8 @@ def test_a_cold_run_is_still_fully_cached_and_makes_no_request(cold):
 
 
 def test_the_command_runs_the_cold_start_test_when_asked(tmp_path):
-    cold_only = ["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1", "--sizes"]
-    assert measure.main([*cold_only, "--out", str(tmp_path / "result")]) == 0
+    assert measure.main(["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1", "--sizes",
+                         "--vector-runs", "0", "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     assert list(runs["state"]) == ["warm", "cold", "warm"] and list(runs["copy"]) == [1, 1, 1]
 
@@ -335,4 +335,82 @@ def test_the_command_writes_the_growth_table_and_prints_the_verdict(tmp_path, ca
     assert list(growth.columns) == ["metric", "median_s_10", "median_s_20", "ratio_20_10"]
     printed = capsys.readouterr().out
     assert "budget (10 s wall, 500 titles, cached): not measured" in printed
+    assert "Row by row against vectorised, 20 films" in printed  # the largest synthetic size is used
+    vectorisation = pd.read_csv(tmp_path / "result" / "vectorisation.csv")
+    assert list(vectorisation.columns) == measurement.VECTORISATION_COLUMNS and (vectorisation["films"] == 20).all()
     assert tree_hash(REPO / "data" / "raw") == real_raw and tree_hash(REPO / "out", "*.csv") == real_out
+
+
+# --- row by row against vectorised --------------------------------------------------------------------------
+
+def edge_films():
+    """Films that exercise every flag: normal, zero budget, zero revenue, unreleased, units error, micro-budget."""
+    from tests.conftest import make_films
+
+    return make_films([
+        {"budget": 1_000_000, "revenue": 5_000_000},
+        {"budget": 0, "revenue": 5_000_000},
+        {"budget": 1_000_000, "revenue": 0},
+        {"budget": 1_000_000, "revenue": 5_000_000, "status": "Rumored"},
+        {"budget": 63, "revenue": 5_000_000, "votes": 20_000},  # a likely units error: left out of the multiple
+        {"budget": 7_000, "revenue": 90_000, "votes": 30},  # a possible micro-budget film: kept
+        {"budget": 2_000_000, "revenue": None},
+    ])
+
+
+def test_the_row_by_row_version_gives_the_same_flags_and_multiples_as_the_pipeline():
+    films = edge_films()
+    by_row, by_column = measurement.rowwise_flags(films), measurement.vectorised_flags(films)
+    assert list(by_row.columns) == list(by_column.columns) == measurement.VECTOR_COLUMNS
+    assert measurement.same_flags(by_row, by_column)
+    assert by_column["roi_usable"].tolist() == [True, False, False, False, False, True, False]
+    assert by_row["roi_usable"].tolist() == by_column["roi_usable"].tolist()
+    assert by_row["roi"].iloc[0] == 5.0 and by_row["roi"].iloc[5] == pytest.approx(90_000 / 7_000)
+    assert by_row["roi"].isna().tolist() == [False, True, True, True, True, False, True]
+
+
+def test_the_comparison_notices_when_the_two_versions_disagree():
+    films = edge_films()
+    good = measurement.vectorised_flags(films)
+    assert not measurement.same_flags(good.assign(roi_usable=~good["roi_usable"]), good)
+    assert not measurement.same_flags(good.assign(roi=good["roi"] + 1), good)
+    assert measurement.same_flags(good, good.copy())
+
+
+def test_timing_stops_if_the_row_by_row_version_is_wrong(monkeypatch):
+    wrong = lambda films: measurement.vectorised_flags(films).assign(roi_usable=False)
+    monkeypatch.setattr(measurement, "rowwise_flags", wrong)
+    with pytest.raises(measurement.MeasurementError, match="disagree"):
+        measurement.vectorisation_runs(edge_films(), runs=1)
+
+
+def test_the_vectorised_version_is_timed_against_the_row_by_row_one():
+    films = pd.concat([edge_films()] * 60, ignore_index=True)  # 420 films
+    table = measurement.vectorisation_runs(films, runs=3)
+    assert list(table.columns) == measurement.VECTORISATION_COLUMNS
+    assert list(table["method"]) == [measurement.ROWWISE, measurement.VECTORISED]
+    assert (table["films"] == 420).all() and (table["runs"] == 3).all()
+    slow, fast = table["median_s"]
+    assert fast < slow and table["times_faster"].iloc[0] == 1.0
+    assert table["times_faster"].iloc[1] == pytest.approx(slow / fast)
+    assert (table["worst_s"] >= table["median_s"]).all()
+
+
+def test_the_vectorisation_text_has_one_line_per_version():
+    table = pd.DataFrame({
+        "method": [measurement.ROWWISE, measurement.VECTORISED], "films": 5000, "runs": 5,
+        "median_s": [1.5, 0.05], "p95_s": [1.6, 0.06], "worst_s": [1.6, 0.06], "times_faster": [1.0, 30.0],
+    })
+    text = measurement.format_vectorisation(table)
+    assert text.splitlines()[0] == "Row by row against vectorised, 5000 films, median of 5 runs"
+    assert "1.5000 s" in text and "30.0x" in text and text.count(chr(10)) == 2
+
+
+def test_the_pipeline_itself_never_uses_a_row_loop():
+    import re
+
+    banned = re.compile(r"iterrows|itertuples|apply\(.*axis\s*=\s*1")
+    for path in sorted((REPO / "pipeline").glob("*.py")):
+        if path.name == "measurement.py":  # the one place a row-wise version is written on purpose
+            continue
+        assert not banned.search(path.read_text(encoding="utf-8")), path.name

@@ -14,7 +14,7 @@ from pipeline.errors import PipelineStopError
 
 DEFAULTS = {
     "warm_runs": 10, "cold_copies": 3, "cold_followups": 4, "sizes": list(measurement.GROWTH_SIZES),
-    "growth_followups": 4,
+    "growth_followups": 4, "vector_runs": 5,
 }
 
 
@@ -29,6 +29,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="synthetic film counts for the growth test (none to skip it)")
     parser.add_argument("--growth-followups", type=int, default=DEFAULTS["growth_followups"],
                         help="warm runs after the cold run at each size")
+    parser.add_argument("--vector-runs", type=int, default=DEFAULTS["vector_runs"],
+                        help="timed runs of the row-wise and vectorised versions (0 to skip)")
     parser.add_argument("--out", type=Path, default=config.REPO_ROOT / "out" / "measurement",
                         help="where the results are written")
     return parser.parse_args(argv)
@@ -39,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     options = {
         "warm_runs": args.warm_runs, "cold_copies": args.cold_copies, "cold_followups": args.cold_followups,
-        "sizes": args.sizes, "growth_followups": args.growth_followups,
+        "sizes": args.sizes, "growth_followups": args.growth_followups, "vector_runs": args.vector_runs,
     }
     try:
         with tempfile.TemporaryDirectory(prefix="streamvault_measure_") as tmp:
@@ -50,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
     measurement.write_results(args.out, tables)
     print(measurement.format_report(tables["timing_summary.csv"]))
     print(measurement.verdict(tables["timing_summary.csv"]))
+    if "vectorisation.csv" in tables:
+        print(measurement.format_vectorisation(tables["vectorisation.csv"]))
     print(f"Results written to {args.out}")
     return 0
 
