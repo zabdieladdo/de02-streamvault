@@ -1,8 +1,8 @@
-# ADR-024: A budget or revenue of zero means "not reported", not zero
+# ADR-006: A budget or revenue of zero means "not reported", not zero
 
 - **Status:** Accepted
 - **Date:** 2026-11-20
-- **Decision owner:** Noell
+- **Decision owner:** Zabdiel
 
 ## Context
 

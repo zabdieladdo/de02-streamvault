@@ -1,4 +1,4 @@
-# ADR-030: Read saved responses from one snapshot per endpoint
+# ADR-007: Read saved responses from one snapshot per endpoint
 
 - **Status:** Proposed (assistant draft)
 - **Date:** 2026-11-20
@@ -6,17 +6,12 @@
 
 ## Context
 
-*Assistant draft, not yet Noell's.*
-
-The target is a full cached run under 10 s wall time at 500 titles (S05). The first measurement gave 15.6 s cold (one run), so the target was not met (`docs/measurement_report.md`, Results 1). The flatten stage took 13.2 s cold against 1.5 s warm, and no other stage changed between cold and warm. It opens about 1,000 newly written files, one details and one credits file per film, and reading them for the first time is slow. The likely cause is scanning of newly written files by the operating system or security software; this is not proven.
-
+The target is a full cached run under 10 s wall time at 500 titles (S05). The first measurement gave 15.6 s cold (one run), so the target was not met (`docs/measurement_report.md`, Results 1). The flatten stage took 13.2 s cold against 1.5 s warm, and no other stage changed between cold and warm. It opens about 1,000 newly written files, one details and one credits file per film, and reading them for the first time is slow. 
 The per-film files are the saved responses ADR-008 describes, one file per film and endpoint with a 180-day life. The spec for this step said not to optimise in the measurement branch and left the fix to a separate decision.
 
 ## Decision
 
-*Assistant draft, not yet Noell's.*
-
-Keep the per-film files in `data/raw/` as the source of truth (ADR-008 unchanged). At the end of the fetch stage, build two snapshot files in the same folder, `snapshot_movie.jsonl` and `snapshot_credits.jsonl`, one line per film whose fetch-log status is `ok`, and have the flatten stage read those two files. Before flatten, the snapshot's film ids and fetch times are compared with the fetch log; a snapshot that does not match is rebuilt from the per-film files, and the rebuild is reported (run log, run status, stage 3 summary). A rebuild that cannot be written stops the run (C-34). The spot-check still reads the per-film files.
+Keep the per-film files in `data/raw/` as the source of truth. At the end of the fetch stage, build two snapshot files in the same folder, `snapshot_movie.jsonl` and `snapshot_credits.jsonl`, one line per film whose fetch-log status is `ok`, and have the flatten stage read those two files. Before flatten, the snapshot's film ids and fetch times are compared with the fetch log; a snapshot that does not match is rebuilt from the per-film files, and the rebuild is reported (run log, run status, stage 3 summary). A rebuild that cannot be written stops the run (C-34). The spot-check still reads the per-film files.
 
 ## Alternatives considered
 

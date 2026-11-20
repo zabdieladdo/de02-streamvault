@@ -2,11 +2,11 @@
 
 - **Status:** Accepted
 - **Date:** 2026-11-20
-- **Decision owner:** Noell
+- **Decision owner:** Zabdiel
 
 ## Context
 
-One full fetch is 229 requests and took about 70 seconds on 20 Nov. Adjoa re-runs the analysis each quarter, sometimes live in a meeting, and the analysis must run from saved data in seconds. TMDb's terms allow its data to be kept for six months at most. Five of the 117 ids sent to TMDb came back "not found". If those answers are not remembered, every run asks again and a fully saved run is impossible.
+One full fetch is 229 requests and took about 70 seconds. Adjoa re-runs the analysis each quarter, sometimes live in a meeting, and the analysis must run from saved data in seconds. TMDb's terms allow its data to be kept for six months at most. Five of the 117 ids sent to TMDb came back "not found". If those answers are not remembered, every run asks again and a fully saved run is impossible.
 
 ## Decision
 

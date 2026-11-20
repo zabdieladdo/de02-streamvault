@@ -1,8 +1,8 @@
-# ADR-012: A film is a franchise entry when TMDb places it in a collection
+# ADR-004: A film is a franchise entry when TMDb places it in a collection
 
 - **Status:** Accepted
 - **Date:** 2026-11-20
-- **Decision owner:** Noell
+- **Decision owner:** Zabdiel
 
 ## Context
 

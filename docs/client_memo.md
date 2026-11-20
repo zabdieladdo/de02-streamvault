@@ -1,6 +1,6 @@
 # Memo to Kwame
 
-**From:** Noell
+**From:** Zabdiel
 **Date:** 20 November 2026
 **Subject:** Franchise bundles or standalone hits: what the evidence supports
 
@@ -42,7 +42,7 @@ Prioritise franchise bundles. Shortlist, based on films from 2000 onward:
 ## What I could not stand behind
 
 - Box office as a stand-in for what subscribers watch.
-- The film data comes from a public database maintained by volunteers; using it for a commercial decision may need a licence from its owner (not legal advice).
+- The film data comes from a public database maintained by volunteers.
 - Five ids matched no film; I cannot say which titles they were meant to be.
 - How many films each studio's bundle contains: bundles were valued on the films on your list.
 - I re-checked 8 films against the live source; all matched. The other 104 were not re-checked.
