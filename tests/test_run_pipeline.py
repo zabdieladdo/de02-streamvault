@@ -215,3 +215,96 @@ def test_windows_disagree_prints_a_banner_and_the_run_continues(capsys, tmp_path
     text = capsys.readouterr().out
     assert "WINDOWS DISAGREE: median_roi" in text
     assert record["windows_disagree"] is True and "median_roi" in record["windows_disagree_measures"]
+
+
+# --- integrity checks stop the run, after the outputs are written ------------------
+
+def _stops_on(env, capsys, check_id, written):
+    """Run main(); it must stop with code 1, name the check, and have written the outputs."""
+    assert run_pipeline.main([], session=fake()) == 1
+    text = capsys.readouterr().out
+    assert "STOPPED" in text and f"{check_id} failed" in text
+    out = env.tmp_path / "out"
+    for name in written:
+        assert (out / name).is_file(), name
+    report = pd.read_csv(out / "checks_report.csv").set_index("check_id")
+    assert not report.loc[check_id, "passed"]
+    record = json.loads((out / "run_log.jsonl").read_text().splitlines()[-1])
+    assert check_id in record["stopped"]
+
+
+STAGE4_FILES = ("films_clean.csv", "review_list.csv", "checks_report.csv")
+STAGE5_FILES = STAGE4_FILES + ("kpis.csv", "window_comparison.csv", "decision_impact.csv")
+
+
+def test_c_roi_failure_stops_the_run(env, capsys, monkeypatch):
+    real = run_pipeline.clean.add_flags
+
+    def broken(films):
+        out = real(films)
+        out["roi"] = 3.0  # a multiple on rows where roi_usable is False
+        return out
+
+    monkeypatch.setattr(run_pipeline.clean, "add_flags", broken)
+    _stops_on(env, capsys, "C-ROI", STAGE4_FILES)
+    assert not (env.tmp_path / "out" / "kpis.csv").exists()  # stage 5 never ran
+
+
+def test_infinite_multiple_also_fails_c_roi(env, capsys, monkeypatch):
+    real = run_pipeline.clean.add_flags
+
+    def broken(films):
+        out = real(films)
+        out["roi_usable"] = True
+        out["roi"] = float("inf")
+        return out
+
+    monkeypatch.setattr(run_pipeline.clean, "add_flags", broken)
+    _stops_on(env, capsys, "C-ROI", STAGE4_FILES)
+
+
+def _patch_kpis(monkeypatch, change):
+    real = run_pipeline.metrics.window_kpis
+    calls = {"n": 0}
+
+    def patched(films):
+        a, b = real(films)
+        calls["n"] += 1
+        return change(a, b, calls["n"])
+
+    monkeypatch.setattr(run_pipeline.metrics, "window_kpis", patched)
+
+
+def test_c22_failure_stops_the_run(env, capsys, monkeypatch):
+    _patch_kpis(monkeypatch, lambda a, b, n: (a.assign(n_films=a["n_films"] + 1), b))
+    _stops_on(env, capsys, "C-22", STAGE5_FILES)
+
+
+def test_c23_failure_stops_the_run(env, capsys, monkeypatch):
+    _patch_kpis(monkeypatch, lambda a, b, n: (a, b.assign(n_films=b["n_films"] + 5)))
+    _stops_on(env, capsys, "C-23", STAGE5_FILES)
+
+
+def test_c25_failure_stops_the_run(env, capsys, monkeypatch):
+    def second_call_differs(a, b, n):
+        return (a, b) if n == 1 else (a.assign(n_roi_usable=a["n_roi_usable"] + 1), b)
+
+    _patch_kpis(monkeypatch, second_call_differs)
+    _stops_on(env, capsys, "C-25", STAGE5_FILES)
+
+
+def test_failing_c18_does_not_stop_the_run(env, capsys, monkeypatch):
+    real = run_pipeline.checks.check_clean_stage
+
+    def failing_c18(*args, **kwargs):
+        report = real(*args, **kwargs)
+        report.loc[report["check_id"] == "C-18", "passed"] = False
+        return report
+
+    monkeypatch.setattr(run_pipeline.checks, "check_clean_stage", failing_c18)
+    assert run_pipeline.main([], session=fake()) == 0
+    out = env.tmp_path / "out"
+    report = pd.read_csv(out / "checks_report.csv").set_index("check_id")
+    assert not report.loc["C-18", "passed"]  # recorded
+    assert (out / "kpis.csv").is_file()  # stage 5 still ran
+    assert "STOPPED" not in capsys.readouterr().out

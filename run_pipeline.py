@@ -312,6 +312,7 @@ def _stage4(stage3: dict, record: dict, out_dir: Path) -> dict:
     print(f"  2000 onward       {len(in_window)} films ({n_franchise_w} franchise, "
           f"{len(in_window) - n_franchise_w} standalone); {no_year} without a year")
     print(f"  checks            {n_passed} passed, {n_failed} failed")
+    checks.raise_if_integrity_failed(report4, "clean")  # after the outputs are on disk
     return {"films_clean": films_clean, "report": report, "quarantine": stage3["quarantine"],
             "films": stage3["films"]}
 
@@ -372,6 +373,7 @@ def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> None:
               f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
     else:
         print(f"Outputs written to {_display_path(out_dir)}/")
+    checks.raise_if_integrity_failed(report5, "measure")  # after the outputs are on disk
 
 
 def main(argv=None, session=None) -> int:
