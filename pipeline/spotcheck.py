@@ -4,15 +4,17 @@ Nothing here writes to data/raw/ or the fetch log: the saved snapshot is what is
 so the check must not change it.
 """
 import json
+import textwrap
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import requests
 
-from pipeline import clean, config, fetch, rank
+from pipeline import clean, config, fetch, load, rank
 from pipeline.errors import PipelineStopError
 from pipeline.redact import redact
 from pipeline.transform import imdb_crossref
@@ -524,3 +526,141 @@ def assess_impact(comparison: pd.DataFrame, films_clean: pd.DataFrame) -> tuple[
     if volatile_moves and not moved:
         moved.append("fresh vote counts change a vote rank in the shortlist")
     return out, {"moves": bool(moved), "what": " | ".join(moved), "volatile_moves": volatile_moves}
+
+
+# --- the command: outputs, summary and run log ----------------------------------------------
+
+CLASSES = (
+    "match", "source_changed", "volatile_changed", "parsing_error", "parsing_error_and_source_changed",
+    "wrong_field", "unverified",
+)
+SLICE_LABEL = {
+    "heaviest_parsing": "heaviest parsing", "extreme_high": "extreme high", "extreme_low": "extreme low",
+    "cleaning_decision": "cleaning decision", "nearly_failed": "nearly failed", "drives_recommendation":
+    "drives recommendation",
+}
+OUTPUT_COLUMNS = [
+    "tmdb_id", "title", "slices", "endpoint", "field", "fresh", "raw", "ours", "class",
+    "moves_recommendation", "checked_at", "note", "impact",
+]
+REQUIRED_OUTPUTS = ("films_clean.csv", "talent.csv", "ids_to_fetch.csv", "quarantine.csv", "deal_note.csv")
+
+
+def load_outputs(out_dir: Path | None = None) -> dict:
+    """Read the pipeline outputs the spot-check works from; stop with a plain message if any is missing."""
+    out_dir = out_dir or config.OUT_DIR
+    missing = [n for n in REQUIRED_OUTPUTS if not (out_dir / n).is_file()]
+    missing += [] if config.FETCH_LOG.is_file() else ["data/raw/fetch_log.csv"]
+    if missing:
+        raise PipelineStopError(f"Missing {', '.join(missing)}. Run python run_pipeline.py first.")
+    return {
+        "films_clean": load.read_films_clean(out_dir / "films_clean.csv"),
+        "talent": load.read_talent(out_dir / "talent.csv"),
+        "ids_to_fetch": pd.read_csv(out_dir / "ids_to_fetch.csv"),
+        "quarantine": pd.read_csv(out_dir / "quarantine.csv", dtype=str, keep_default_na=False),
+        "deal_note": pd.read_csv(out_dir / "deal_note.csv"),
+        "fetch_log": pd.read_csv(config.FETCH_LOG),
+    }
+
+
+def snapshot_dates(fetch_log: pd.DataFrame, tmdb_ids: list[int]) -> str:
+    """The date, or dates, on which the checked films were fetched into the snapshot."""
+    ids = pd.to_numeric(fetch_log["tmdb_id"], errors="coerce")
+    days = fetch_log.loc[ids.isin(tmdb_ids), "fetched_at"].astype(str).str[:10]
+    first, last = (days.min(), days.max()) if len(days) else ("unknown", "unknown")
+    return first if first == last else f"{first} to {last}"
+
+
+def summarize(comparison: pd.DataFrame, checked: pd.DataFrame, overall: dict) -> pd.DataFrame:
+    """The summary table: films, fields, the count in every class, and the recommendation answer."""
+    counts = comparison["class"].value_counts()
+    rows = [("films_checked", len(checked)), ("fields_compared", len(comparison))]
+    rows += [(f"class_{name}", int(counts.get(name, 0))) for name in CLASSES]
+    rows += [
+        ("discrepancies", int(is_discrepancy(comparison["class"]).sum())),
+        ("recommendation_changed", bool(overall["moves"])),
+        ("volatile_changes_move_a_vote_rank", bool(overall["volatile_moves"])),
+        ("what_changed", overall["what"]),
+    ]
+    return pd.DataFrame(rows, columns=["metric", "value"])
+
+
+def format_summary(
+    selection: pd.DataFrame, comparison: pd.DataFrame, overall: dict, snapshot: str, checked_at: str
+) -> str:
+    """The printed summary, from the data only."""
+    counts = comparison["class"].value_counts()
+
+    def n(name: str) -> int:
+        return int(counts.get(name, 0))
+
+    stand_in = selection.groupby("slice")["stand_in"].any()
+    pieces = [
+        f"{SLICE_LABEL[name]}{'*' if stand_in[name] else ''}: " + ", ".join(group["title"].drop_duplicates())
+        for name, group in selection.groupby("slice", sort=False)
+    ]
+    films_line = textwrap.wrap(
+        " | ".join(pieces) + ")", width=112, initial_indent=f"  films        {selection['tmdb_id'].nunique()}   (",
+        subsequent_indent=" " * 20,
+    )
+    lines = [f"Spot-check against the live API (snapshot {snapshot}, checked {checked_at})", *films_line]
+    if selection["stand_in"].any():
+        lines.append("               * no request needed a retry; slowest response used instead")
+    fields = (
+        f"  fields       {len(comparison)} compared: {n('match')} match | {n('source_changed')} source changed | "
+        f"{n('volatile_changed')} volatile changed | {n('parsing_error')} parsing error | "
+        f"{n('wrong_field')} wrong field"
+    )
+    if n("parsing_error_and_source_changed"):
+        fields += f" | {n('parsing_error_and_source_changed')} both parsing error and source change"
+    if n("unverified"):
+        fields += f" | {n('unverified')} unverified (no live answer)"
+    lines.append(fields)
+    if n("volatile_changed"):
+        verdict = "a vote rank in the shortlist changes" if overall["volatile_moves"] else "no ranking changes"
+        lines.append(f"  volatile     {n('volatile_changed')} fields changed since the snapshot; {verdict}")
+    lines.append("  recommendation   " + (f"CHANGED: {overall['what']}" if overall["moves"] else "unchanged"))
+    return "\n".join(lines)
+
+
+def run_spotcheck(
+    tables: dict, session: requests.Session | None = None, key: str | None = None,
+    out_dir: Path | None = None, now: datetime | None = None,
+) -> dict:
+    """Choose, fetch live, compare, assess and write. Never writes data/raw/ or the fetch log."""
+    started = time.perf_counter()
+    out_dir = out_dir or config.OUT_DIR
+    now = now or datetime.now(UTC)
+    checked_at = now.strftime("%Y-%m-%d %H:%M UTC")
+    films, talent = tables["films_clean"], tables["talent"]
+
+    selection = select_spotcheck_films(
+        films, tables["ids_to_fetch"], tables["quarantine"], tables["deal_note"], tables["fetch_log"]
+    )
+    checked = films_to_check(selection)
+    live = fetch_live(checked["tmdb_id"].tolist(), session=session, key=key)
+    comparison = build_comparison(checked, live, films, talent)
+    comparison, overall = assess_impact(comparison, films)
+    comparison = comparison.assign(checked_at=now.isoformat(timespec="seconds"))[OUTPUT_COLUMNS]
+    summary = summarize(comparison, checked, overall)
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    comparison.to_csv(out_dir / "spotcheck.csv", index=False, encoding="utf-8")
+    summary.to_csv(out_dir / "spotcheck_summary.csv", index=False, encoding="utf-8")
+
+    snapshot = snapshot_dates(tables["fetch_log"], checked["tmdb_id"].tolist())
+    text = format_summary(selection, comparison, overall, snapshot, checked_at)
+    print(text)
+    counts = comparison["class"].value_counts()
+    record = {
+        "kind": "spotcheck", "run_at": now.isoformat(timespec="seconds"), "snapshot": snapshot,
+        "films_checked": len(checked), "fields_compared": len(comparison),
+        "requests": len(live), "by_class": {name: int(counts.get(name, 0)) for name in CLASSES},
+        "discrepancies": int(is_discrepancy(comparison["class"]).sum()),
+        "recommendation_changed": bool(overall["moves"]), "what_changed": overall["what"],
+        "nearly_failed_is_stand_in": bool(selection["stand_in"].any()),
+        "seconds": round(time.perf_counter() - started, 3), "stopped": None,
+    }
+    with open(out_dir / "run_log.jsonl", "a", encoding="utf-8") as log:  # this run's own folder, not config's
+        log.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return {"selection": selection, "comparison": comparison, "summary": summary, "overall": overall, "text": text}

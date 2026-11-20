@@ -1,15 +1,19 @@
 """Spot-check: which films, the live fetch that never writes, the comparison and its impact."""
 import hashlib
+import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 import requests
 
+import run_pipeline
+import spotcheck as command
 from pipeline import clean, config, fetch, spotcheck
 from pipeline.errors import PipelineStopError
 from tests.conftest import NOT_FOUND_BODY, TEST_KEY, FakeResponse, FakeSession, make_films, ok_body
 from tests.test_fetch import make_ids
+from tests.test_run_pipeline import IDS, fake
 
 
 def money(roi):
@@ -560,3 +564,228 @@ def test_the_assessment_never_touches_the_snapshot(fetch_env):
     before = tree_hash(config.RAW_DIR)
     assess(difference(101, "1-2", "revenue", 1_000_000, 9_200_000))
     assert tree_hash(config.RAW_DIR) == before
+
+
+# --- the command ---------------------------------------------------------------------------------
+
+class Replay(FakeSession):
+    """A live answer that is the saved snapshot, optionally with a few values changed."""
+
+    def __init__(self, changes=None):
+        super().__init__()
+        self.changes = changes or {}  # {(endpoint, tmdb_id): {field: new value}}
+
+    def get(self, url, params=None, timeout=None):
+        path = url.removeprefix(config.API_BASE)
+        self.calls.append(path)
+        endpoint = "credits" if path.endswith("/credits") else "details"
+        tmdb_id = int(path.split("/")[2])
+        body = json.loads(fetch.cache_file(endpoint, tmdb_id).read_bytes())
+        body.update(self.changes.get((endpoint, tmdb_id), {}))
+        return FakeResponse(200, json.dumps(body).encode("utf-8"))
+
+
+@pytest.fixture
+def pipeline_env(write_ids, fetch_env, monkeypatch):
+    """A small snapshot and outputs made by the real pipeline, all under tmp_path."""
+    monkeypatch.setattr(config, "INPUT_IDS", write_ids(IDS))
+    monkeypatch.setattr(config, "OUT_DIR", fetch_env.tmp_path / "out")
+    monkeypatch.setattr(config, "LIMITED_OUT_DIR", fetch_env.tmp_path / "out" / "limited")
+    assert run_pipeline.main([], session=fake()) == 0
+    return fetch_env
+
+
+def test_the_command_runs_end_to_end_and_writes_both_files_and_a_log_line(pipeline_env, capsys):
+    capsys.readouterr()
+    assert command.main(session=Replay()) == 0
+    text = capsys.readouterr().out
+    assert text.startswith("Spot-check against the live API (snapshot ") and "  recommendation   unchanged" in text
+    out = pipeline_env.tmp_path / "out"
+    table = pd.read_csv(out / "spotcheck.csv")
+    assert list(table.columns) == spotcheck.OUTPUT_COLUMNS
+    assert set(table["class"]) == {"match"}  # the live answer is the snapshot, so nothing differs
+    summary = pd.read_csv(out / "spotcheck_summary.csv").set_index("metric")["value"]
+    assert int(summary["fields_compared"]) == len(table) == 14 * int(summary["films_checked"])
+    assert int(summary["class_match"]) == len(table) and summary["recommendation_changed"] == "False"
+    last = json.loads((out / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert last["kind"] == "spotcheck" and last["by_class"]["match"] == len(table) and last["stopped"] is None
+
+
+def test_the_command_leaves_data_raw_and_the_fetch_log_byte_identical(pipeline_env):
+    before = tree_hash(config.RAW_DIR)
+    assert any(name.endswith("fetch_log.csv") for name in before)
+    assert command.main(session=Replay()) == 0
+    assert tree_hash(config.RAW_DIR) == before
+
+
+def test_pipeline_outputs_are_not_changed_by_the_check_except_its_own_files(pipeline_env):
+    out = pipeline_env.tmp_path / "out"
+    before = {p.name: p.read_bytes() for p in out.glob("*.csv")}
+    command.main(session=Replay())
+    after = {p.name: p.read_bytes() for p in out.glob("*.csv")}
+    assert {k: v for k, v in after.items() if k not in ("spotcheck.csv", "spotcheck_summary.csv")} == before
+
+
+def test_a_changed_live_value_is_reported_as_a_source_change_with_the_two_values(pipeline_env, capsys):
+    capsys.readouterr()
+    assert command.main(session=Replay({("details", 155): {"title": "A New Title"}})) == 0
+    table = pd.read_csv(pipeline_env.tmp_path / "out" / "spotcheck.csv", keep_default_na=False)
+    row = table[(table["tmdb_id"] == 155) & (table["field"] == "title")].iloc[0]
+    assert row["class"] == "source_changed" and row["fresh"] == "A New Title"
+    assert row["raw"] == row["ours"] == "Film 155"
+    assert "1 source changed" in capsys.readouterr().out
+
+
+def test_the_run_pipeline_command_never_runs_the_spot_check():
+    assert "spotcheck" not in (Path(config.REPO_ROOT) / "run_pipeline.py").read_text(encoding="utf-8")
+
+
+def test_a_rejected_key_stops_the_command_and_writes_nothing(pipeline_env, capsys):
+    capsys.readouterr()
+    session = FakeSession({"/movie/155": FakeResponse(401, b"{}")})
+    assert command.main(session=session) == 1
+    assert "STOPPED: API key rejected (401)" in capsys.readouterr().out
+    assert not (pipeline_env.tmp_path / "out" / "spotcheck.csv").exists()
+
+
+def test_missing_outputs_stop_with_a_plain_message(write_ids, fetch_env, monkeypatch, capsys):
+    monkeypatch.setattr(config, "OUT_DIR", fetch_env.tmp_path / "nothing_here")
+    assert command.main(session=FakeSession()) == 1
+    assert "Run python run_pipeline.py first" in capsys.readouterr().out
+
+
+def test_no_key_stops_the_command_before_any_request(pipeline_env, monkeypatch, capsys):
+    monkeypatch.delenv("TMDB_API_KEY")
+    session = FakeSession()
+    assert command.main(session=session) == 1
+    assert "TMDB_API_KEY not set" in capsys.readouterr().out and session.calls == []
+
+
+def test_the_key_appears_in_no_output_not_even_when_a_request_fails(pipeline_env, capsys):
+    capsys.readouterr()
+    err = requests.ConnectionError(f"failed: {config.API_BASE}/movie/155?api_key={TEST_KEY}")
+    down = FakeSession({"/movie/155": err, "/movie/155/credits": err})
+    assert command.main(session=down) == 0  # two failed requests are not enough to stop; the fields are unverified
+    table = pd.read_csv(pipeline_env.tmp_path / "out" / "spotcheck.csv", keep_default_na=False)
+    assert set(table["class"]) == {"unverified"}
+    assert command.main(session=Replay()) == 0  # and a normal run
+    shown = capsys.readouterr()
+    assert TEST_KEY not in shown.out + shown.err
+    for path in pipeline_env.tmp_path.rglob("*"):
+        if path.is_file():
+            assert TEST_KEY.encode() not in path.read_bytes(), path
+
+
+# --- the printed summary --------------------------------------------------------------------------
+
+def summary_inputs(classes, stand_in=False):
+    selection = pd.DataFrame({
+        "slice": [
+            "heaviest_parsing", "extreme_high", "nearly_failed", "drives_recommendation", "drives_recommendation",
+        ],
+        "tmdb_id": [1, 2, 3, 4, 5], "detail": "",
+        "title": ["Batman Begins", "Star Wars", "Back to the Future Part II", "The Fellowship", "The Two Towers"],
+        "stand_in": [False, False, stand_in, False, False],
+    })
+    return selection, pd.DataFrame({"class": classes})
+
+
+def test_the_summary_lists_every_slice_and_the_standin_footnote():
+    selection, comparison = summary_inputs(["match"] * 4, stand_in=True)
+    text = spotcheck.format_summary(selection, comparison, {"moves": False, "what": "", "volatile_moves": False},
+                                    "2026-11-20", "2026-11-20 10:00 UTC")
+    assert text.startswith("Spot-check against the live API (snapshot 2026-11-20, checked 2026-11-20 10:00 UTC)")
+    assert "films        5   (heaviest parsing: Batman Begins | extreme high: Star Wars" in text
+    assert "nearly failed*: Back" in text.replace("\n                    ", " ")
+    assert "drives recommendation: The Fellowship, The Two Towers)" in text.replace("\n                    ", " ")
+    assert "* no request needed a retry; slowest response used instead" in text
+    assert "  fields       4 compared: 4 match | 0 source changed | 0 volatile changed | 0 parsing error" in text
+    assert "0 parsing error | 0 wrong field" in text
+    assert text.rstrip().endswith("  recommendation   unchanged")
+
+
+def test_the_summary_has_no_footnote_when_a_request_really_was_retried():
+    selection, comparison = summary_inputs(["match"], stand_in=False)
+    none = {"moves": False, "what": "", "volatile_moves": False}
+    text = spotcheck.format_summary(selection, comparison, none, "d", "t")
+    assert "nearly failed:" in text.replace("\n                    ", " ") and "*" not in text
+
+
+def test_the_summary_names_a_change_to_the_recommendation():
+    selection, comparison = summary_inputs(["match", "source_changed"])
+    overall = {"moves": True, "what": "robust candidate Collection 1 -> Collection 2", "volatile_moves": False}
+    text = spotcheck.format_summary(selection, comparison, overall, "d", "t")
+    assert text.rstrip().endswith("  recommendation   CHANGED: robust candidate Collection 1 -> Collection 2")
+    assert "1 source changed" in text
+
+
+def test_the_summary_counts_the_unusual_classes_only_when_they_occur():
+    selection, comparison = summary_inputs(
+        ["match", "parsing_error_and_source_changed", "unverified", "volatile_changed"]
+    )
+    volatile = {"moves": False, "what": "", "volatile_moves": True}
+    text = spotcheck.format_summary(selection, comparison, volatile, "d", "t")
+    assert "1 both parsing error and source change" in text and "1 unverified (no live answer)" in text
+    assert "1 fields changed since the snapshot; a vote rank in the shortlist changes" in text
+    plain = spotcheck.format_summary(selection, pd.DataFrame({"class": ["match"]}),
+                                     {"moves": False, "what": "", "volatile_moves": False}, "d", "t")
+    assert "unverified" not in plain and "both parsing" not in plain and "volatile  " not in plain
+
+
+def test_the_summary_table_has_a_row_for_every_class_even_when_zero():
+    selection, comparison = summary_inputs(["match", "match", "source_changed"])
+    checked = spotcheck.films_to_check(selection.assign(slice=selection["slice"]))
+    table = spotcheck.summarize(comparison, checked, {"moves": False, "what": "", "volatile_moves": False})
+    values = table.set_index("metric")["value"]
+    assert values["films_checked"] == 5 and values["fields_compared"] == 3 and values["discrepancies"] == 1
+    for name in spotcheck.CLASSES:
+        assert f"class_{name}" in values.index
+    assert values["class_match"] == 2 and values["class_wrong_field"] == 0 and values["recommendation_changed"] is False
+
+
+def test_a_revenue_that_moves_the_robust_candidate_makes_the_command_print_changed(fetch_env, tmp_path, capsys):
+    films = impact_films().assign(
+        n_cast=20, n_crew=20, n_genres=1, imdb_id=pd.array([pd.NA] * 13, dtype="string"),
+        release_date_raw="2005-06-01", genres_all="Action", vote_average=7.0, popularity=1.0,
+    )
+    ids = pd.DataFrame({"tmdb_id": films["tmdb_id"], "n_occurrences": 1})
+    quarantine = pd.DataFrame({"stage": [], "reason_code": [], "raw_value": []})
+    deal = pd.DataFrame({"candidate": ["robust candidate"], "collection_id": [1], "collection_name": ["Collection 1"]})
+    log = pd.DataFrame({"tmdb_id": films["tmdb_id"], "endpoint": "details", "attempts": 1, "elapsed_s": 0.3,
+                        "fetched_at": "2026-11-20T04:00:00+00:00"})
+    talent = pd.DataFrame({"tmdb_id": [], "person_id": [], "role": [], "billing_rank": []})
+    config.RAW_DETAILS_DIR.mkdir(parents=True, exist_ok=True)
+    config.RAW_CREDITS_DIR.mkdir(parents=True, exist_ok=True)
+    for film in films.to_dict("records"):  # a saved snapshot that agrees with our table
+        details = {
+            "id": film["tmdb_id"], "title": film["title"], "release_date": "2005-06-01", "status": "Released",
+            "budget": int(film["budget"]), "revenue": int(film["revenue"]), "genres": [{"name": "Action"}],
+            "belongs_to_collection": None if pd.isna(film["collection_id"]) else {"id": int(film["collection_id"])},
+            "imdb_id": None, "vote_count": int(film["vote_count"]), "vote_average": 7.0, "popularity": 1.0,
+        }
+        (config.RAW_DETAILS_DIR / f"{film['tmdb_id']}.json").write_text(json.dumps(details), encoding="utf-8")
+        credits_file = config.RAW_CREDITS_DIR / f"{film['tmdb_id']}.json"
+        credits_file.write_text(json.dumps({"id": film["tmdb_id"]}), encoding="utf-8")
+    tables = {"films_clean": films, "talent": talent, "ids_to_fetch": ids, "quarantine": quarantine,
+              "deal_note": deal, "fetch_log": log}
+    before = tree_hash(config.RAW_DIR)
+    live = Replay({("details", 101): {"revenue": 1_000_000}})  # film 1-2: 9.2x falls to 1.0x
+    result = spotcheck.run_spotcheck(tables, session=live, key=TEST_KEY, out_dir=tmp_path / "out")
+    text = capsys.readouterr().out
+    assert result["overall"]["moves"] and "  recommendation   CHANGED: " in text
+    assert "robust candidate Collection 1 -> Collection 2" in text
+    table = pd.read_csv(tmp_path / "out" / "spotcheck.csv", keep_default_na=False)
+    moved = table[table["moves_recommendation"].astype(str) == "True"]
+    assert "revenue" in set(moved["field"]) and set(moved["tmdb_id"]) == {101}  # only the film that changed
+    assert tree_hash(config.RAW_DIR) == before
+
+
+def test_the_run_log_line_goes_to_the_folder_given_not_to_the_default(pipeline_env, tmp_path, monkeypatch):
+    other = tmp_path / "elsewhere"
+    default_log = pipeline_env.tmp_path / "out" / "run_log.jsonl"
+    before = default_log.read_bytes()
+    tables = spotcheck.load_outputs()
+    spotcheck.run_spotcheck(tables, session=Replay(), key=TEST_KEY, out_dir=other)
+    assert default_log.read_bytes() == before  # the default folder's log is untouched
+    assert json.loads((other / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])["kind"] == "spotcheck"
+    assert (other / "spotcheck.csv").is_file() and (other / "spotcheck_summary.csv").is_file()
