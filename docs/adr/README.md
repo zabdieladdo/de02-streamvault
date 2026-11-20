@@ -34,5 +34,6 @@ Status values: Accepted, Planned (agreed in `de02-final-outline.md`, ADR not yet
 | [ADR-026](ADR-026-small-groups.md) | Three films to rank a bundle, five for a group conclusion, and every figure carries its count | Accepted | 2026-11-20 |
 | [ADR-027](ADR-027-window-disagreement-is-reported-first.md) | Disagreement between the two windows is detected by the run and reported first | Accepted | 2026-11-20 |
 | [ADR-028](ADR-028-stand-behind-2000-onward.md) | The shortlist and deal note stand behind the 2000-onward window; all-years figures are the caveat | Accepted | 2026-11-20 |
+| [ADR-029](ADR-029-spot-check-by-rule-with-three-way-comparison.md) | The spot-check picks films by rule and classifies each difference by comparing the live value, the saved response and our table | Accepted | 2026-11-20 |
 | — | No numeric time budget from Evalu8; ours is analysis stage under 10 s at 500 titles, fetch timed separately (D1) | Planned | — |
 | — | `tt0468569` excluded; id resolver is the improvement beyond the brief (D6) | Planned | — |

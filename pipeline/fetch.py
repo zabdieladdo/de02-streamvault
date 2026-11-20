@@ -354,9 +354,11 @@ def fetch_all(
             details, src = resolve(tmdb_id, "details")
             add(details, src)
             if details.outcome in NOT_FOUND:
+                # the credits row depends on the details answer, so it keeps that answer's time: a run
+                # that makes no request must not rewrite the log
                 skipped = FetchResult(
                     tmdb_id, "credits", endpoint_path("credits", tmdb_id), None,
-                    "skipped", None, _now_iso(), 0.0, "details not found",
+                    "skipped", None, details.fetched_at, 0.0, "details not found",
                 )
                 log[(tmdb_id, "credits")] = _log_row(skipped)
                 add(skipped, "none")

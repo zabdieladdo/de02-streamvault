@@ -358,3 +358,46 @@ def test_no_session_is_opened_when_everything_is_cached(monkeypatch):
     monkeypatch.setattr(fetch, "build_session", lambda: built.append(FakeSession()) or built[-1])
     fetch.fetch_all(make_ids(603), key=TEST_KEY)
     assert built == []  # nothing to open, so nothing to close
+
+
+# --- a cached run must not rewrite the fetch log ---------------------------------------------
+
+def moving_clock(monkeypatch):
+    """Make every call to the fetch stage's clock return a later time, so a re-stamp would show.
+
+    The times start an hour ago, so the cached answers stay well inside the 180-day limit.
+    """
+    start = datetime.now(UTC) - timedelta(hours=1)
+    ticks = iter(range(1_000_000))
+    monkeypatch.setattr(
+        fetch, "_now_iso", lambda: (start + timedelta(seconds=next(ticks))).isoformat(timespec="seconds")
+    )
+
+
+def test_skipped_credits_keep_the_time_of_the_details_result_they_depend_on(monkeypatch):
+    moving_clock(monkeypatch)
+    session = FakeSession({"/movie/404": FakeResponse(404, NOT_FOUND_BODY)})
+    run(make_ids(404, 603), session=session)
+    log = read_log().set_index(["tmdb_id", "endpoint"])
+    assert log.loc[("404", "credits"), "outcome"] == "skipped"
+    assert log.loc[("404", "credits"), "fetched_at"] == log.loc[("404", "details"), "fetched_at"]
+
+
+def test_two_cached_runs_leave_the_fetch_log_byte_identical(monkeypatch):
+    moving_clock(monkeypatch)
+    run(make_ids(404, 603, 155), session=FakeSession({"/movie/404": FakeResponse(404, NOT_FOUND_BODY)}))
+    first = config.FETCH_LOG.read_bytes()
+    second_session = FakeSession()
+    run(make_ids(404, 603, 155), session=second_session)
+    assert second_session.calls == []  # nothing was requested: every answer came from the cache
+    assert config.FETCH_LOG.read_bytes() == first
+    run(make_ids(404, 603, 155), session=FakeSession())
+    assert config.FETCH_LOG.read_bytes() == first
+
+
+def test_a_remembered_not_found_keeps_its_skipped_credits_row_unchanged(monkeypatch):
+    moving_clock(monkeypatch)
+    run(make_ids(404), session=FakeSession({"/movie/404": FakeResponse(404, NOT_FOUND_BODY)}))
+    before = read_log().set_index("endpoint")["fetched_at"].to_dict()
+    run(make_ids(404), session=FakeSession())
+    assert read_log().set_index("endpoint")["fetched_at"].to_dict() == before

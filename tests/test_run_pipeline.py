@@ -606,3 +606,14 @@ def test_stage6_prints_both_reference_medians_and_the_standalone_picks_above_the
     assert set(record["standalone_picks_above_list_median"]) == {"all years", "2000 onward"}
     k, n = record["standalone_picks_above_list_median"]["2000 onward"]
     assert n == 5 and 0 <= k <= n
+
+
+def test_consecutive_cached_runs_leave_the_fetch_log_byte_identical(env):
+    assert run_pipeline.main([], session=fake()) == 0  # the first run makes the requests, including a not-found
+    first = config.FETCH_LOG.read_bytes()
+    assert b"skipped" in first  # the not-found id left a skipped credits row
+    for _ in range(2):
+        session = FakeSession()
+        assert run_pipeline.main([], session=session) == 0
+        assert session.calls == []  # fully cached
+        assert config.FETCH_LOG.read_bytes() == first
