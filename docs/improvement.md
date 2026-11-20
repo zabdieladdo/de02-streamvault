@@ -2,7 +2,7 @@
 
 ## The problem it solves
 
-One of the three sources sent an IMDb id (`tt0468569`) where a TMDb id was expected (F-03). The pipeline quarantines such an id (ADR-002), so the title never reaches the analysis unless someone fixes it by hand. This year it was a third copy of The Dark Knight, so nothing was lost. Next year's list is about 500 titles from the same sources and may hold more, and a title that is missed is a title Kwame never sees priced.
+One of the three sources sent an IMDb id (`tt0468569`) where a TMDb id was expected (F-03). The pipeline quarantines such an id (ADR-001), so the title never reaches the analysis unless someone fixes it by hand. This year the id was another copy of The Dark Knight, which was already on the list at line 2, so nothing was lost. Next year's list is about 500 titles from the same sources and may hold more, and a title that is missed is a title Kwame never sees priced.
 
 ## What I built
 
@@ -17,11 +17,11 @@ IMDb id resolver
 
 ## What it is worth to Adjoa
 
-Next year's studio batch can be used as sent: any IMDb ids in it are turned into the right films, or flagged, in one command instead of by hand.
+Any IMDb ids in next year's studio batch are turned into the right films, or flagged, in one command instead of by hand. This year 1 of 127 ids was an IMDb id (0.8%). If the same rate holds, about 4 of 500 would be next year. That is an assumption, since the rate depends on the sources. Each one is a manual lookup, and a missed lookup is a film Kwame never sees priced.
 
 ## What it cost
 
-- My time on it: the spec, the build and the tests (34 tests, with a fake session and no network). The hours were not recorded, so no figure is given here.
+- My time on it: [X hours over Y days], covering the spec, the build, the tests (34 tests, with a fake session and no network) and this write-up.
 - One extra endpoint, TMDb's lookup by IMDb id, outside the two the brief names. Only this optional command uses it.
-- One more folder of saved responses (`data/raw/find/`) under the same 180-day rule and the same limits on sharing.
+- One more folder of saved responses (`data/raw/find/`) under the same rules as the other saved responses: not shared, and kept at most 180 days.
 - A person still decides whether to use the suggested list. A full run clears the `.csv` files in `out/`, so the suggestion has to be copied out of `out/` before it is used as the input (`STREAMVAULT_INPUT_IDS`), and an ambiguous or failed id is reported but never added.
