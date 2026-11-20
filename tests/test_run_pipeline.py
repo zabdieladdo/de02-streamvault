@@ -490,9 +490,9 @@ def test_c29_stop_reaches_the_exit_code_and_status(env, capsys, monkeypatch):
 
 
 def test_stage6_prints_the_two_windows_and_where_they_differ(tmp_path, capsys):
-    from tests.test_rank import window_fixture
-    from tests.conftest import make_talent
     from pipeline import metrics
+    from tests.conftest import make_talent
+    from tests.test_rank import window_fixture
 
     f = window_fixture()
     tables = {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
@@ -512,9 +512,9 @@ def test_stage6_prints_the_two_windows_and_where_they_differ(tmp_path, capsys):
 
 
 def test_stage6_says_nothing_when_the_windows_agree(tmp_path, capsys):
-    from tests.conftest import make_talent
-    from tests.test_rank import money, bundle_rows, flagged
     from pipeline import metrics
+    from tests.conftest import make_talent
+    from tests.test_rank import bundle_rows, flagged, money
 
     rows = bundle_rows(1, [2, 3, 4], years=[2001, 2004, 2008]) + [
         {"tmdb_id": 50 + i, "title": f"s{i}", "year": 2010 + i, "votes": 100 + i, **money(9 - i)} for i in range(7)]
@@ -528,9 +528,9 @@ def test_stage6_says_nothing_when_the_windows_agree(tmp_path, capsys):
 
 
 def _window_tables():
+    from pipeline import metrics
     from tests.conftest import make_talent
     from tests.test_rank import window_fixture
-    from pipeline import metrics
 
     f = window_fixture()
     return {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),

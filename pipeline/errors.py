@@ -8,5 +8,6 @@ class PipelineStopError(Exception):
     """
 
     def __init__(self, message: str = "", check_id: str | None = None):
+        """Keep the message and, when a check caused the stop, the id of that check."""
         super().__init__(message)
         self.check_id = check_id

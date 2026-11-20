@@ -1,9 +1,16 @@
-"""Run checks C-01 to C-27 and produce one pass/fail table."""
+"""Run checks C-01 to C-33 and produce one pass/fail table per stage."""
+from datetime import UTC
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pandas as pd
 
 from pipeline import config
 from pipeline.errors import PipelineStopError
+
+if TYPE_CHECKING:  # only for the annotations below; importing them here would be circular
+    from pipeline.fetch import FetchRun
+    from pipeline.transform import FlattenRun
 
 STAGE = "load"
 
@@ -89,7 +96,12 @@ def check_load_stage(
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
 
 
-def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> None:
+def _failure_text(failed: pd.DataFrame) -> str:
+    """One message naming every failed check, from the check_id and detail columns."""
+    return "; ".join((failed["check_id"].astype(str) + " failed: " + failed["detail"].astype(str)).tolist())
+
+
+def raise_if_conservation_failed(report: pd.DataFrame, check_ids: tuple[str, ...] = ("C-03",)) -> None:
     """A conservation check failing means rows were lost or invented; stop the run.
 
     C-03 is load, C-03f is fetch and C-03g is flatten. Each is raised from its own stage,
@@ -97,10 +109,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
     """
     failed = report[report["check_id"].isin(check_ids) & ~report["passed"]]
     if not failed.empty:
-        raise PipelineStopError(
-            "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples()),
-            check_id=failed["check_id"].iloc[0],
-        )
+        raise PipelineStopError(_failure_text(failed), check_id=failed["check_id"].iloc[0])
 
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
@@ -114,11 +123,10 @@ def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
         report["check_id"].isin(INTEGRITY_CHECKS) & (report["stage"] == stage) & ~report["passed"]
     ]
     if not failed.empty:
-        text = "; ".join(f"{r.check_id} failed: {r.detail}" for r in failed.itertuples())
-        raise PipelineStopError(text, check_id=failed["check_id"].iloc[0])
+        raise PipelineStopError(_failure_text(failed), check_id=failed["check_id"].iloc[0])
 
 
-def check_fetch_stage(run) -> pd.DataFrame:
+def check_fetch_stage(run: "FetchRun") -> pd.DataFrame:
     """Checks for stage 2. `run` is a fetch.FetchRun. Same columns as the load checks."""
     results, quarantine, ids = run.results, run.quarantine, run.ids_processed
     stage = "fetch"
@@ -185,7 +193,7 @@ def check_fetch_stage(run) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
 
 
-def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
+def check_flatten_stage(run: "FlattenRun", load_quarantine: pd.DataFrame) -> pd.DataFrame:
     """Checks for stage 3. `run` is a transform.FlattenRun; same columns as the other checks."""
     from pipeline.transform import imdb_crossref  # local import: transform imports fetch
 
@@ -259,10 +267,10 @@ def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
 
 def check_clean_stage(films_clean: pd.DataFrame, as_of_year: int | None = None) -> pd.DataFrame:
     """Checks C-15 to C-20 and C-ROI for stage 4; same columns as the other checks."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     f = films_clean
-    year_limit = as_of_year or datetime.now(timezone.utc).year
+    year_limit = as_of_year or datetime.now(UTC).year
     rows = []
 
     def add(check_id, description, passed, detail):
@@ -449,7 +457,8 @@ def check_rank_stage(
     robust = deal_note[deal_note["candidate"] == "robust candidate"]
     both_windows = bundles["rankable"] & bundles["rankable_2000_on"]
     if robust.empty:
-        ok, detail = not both_windows.any(), f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
+        ok = not both_windows.any()
+        detail = f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
     else:
         row = bundles[bundles["collection_id"] == robust["collection_id"].iloc[0]]
         ok = bool(len(robust) == 1 and len(row) == 1 and both_windows[row.index].all())

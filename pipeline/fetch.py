@@ -2,7 +2,7 @@
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -37,6 +37,8 @@ REASON_ORDER = list(REASON_DETAIL)
 
 @dataclass
 class FetchResult:
+    """The outcome of one request, or one answer read from the cache, for a film and an endpoint."""
+
     tmdb_id: int
     endpoint: str
     path: str
@@ -52,6 +54,8 @@ class FetchResult:
 
 @dataclass
 class FetchRun:
+    """Everything the fetch stage produced: results, quarantine, ids processed and call counts."""
+
     results: pd.DataFrame
     quarantine: pd.DataFrame
     ids_processed: pd.DataFrame
@@ -88,10 +92,12 @@ class RateLimiter:
     """Keep network requests at least 1 / requests_per_second seconds apart."""
 
     def __init__(self, requests_per_second: float):
+        """Allow at most `requests_per_second` network requests a second."""
         self.interval = 1.0 / requests_per_second
         self._last: float | None = None
 
     def wait(self) -> None:
+        """Sleep, if needed, so the next request starts one interval after the last."""
         if self._last is not None:
             gap = self.interval - (time.monotonic() - self._last)
             if gap > 0:
@@ -102,7 +108,7 @@ class RateLimiter:
 # --- helpers ---------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _age_days(iso: str, now: datetime) -> float | None:
@@ -111,15 +117,17 @@ def _age_days(iso: str, now: datetime) -> float | None:
     except (TypeError, ValueError):
         return None
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
+        then = then.replace(tzinfo=UTC)
     return (now - then).total_seconds() / 86400
 
 
 def endpoint_path(endpoint: str, tmdb_id: int) -> str:
+    """The API path for an endpoint and film id, from the templates in config."""
     return config.ENDPOINTS[endpoint].format(id=tmdb_id)
 
 
 def cache_file(endpoint: str, tmdb_id: int) -> Path:
+    """The file where the raw JSON for this film and endpoint is saved."""
     directory = config.RAW_DETAILS_DIR if endpoint == "details" else config.RAW_CREDITS_DIR
     return directory / f"{tmdb_id}.json"
 
@@ -144,7 +152,9 @@ def _message(response) -> str:
 
 # --- one request -----------------------------------------------------------
 
-def get_one(session, limiter: RateLimiter, endpoint: str, tmdb_id: int, key: str) -> FetchResult:
+def get_one(
+    session: requests.Session, limiter: RateLimiter, endpoint: str, tmdb_id: int, key: str
+) -> FetchResult:
     """One network request. Writes the cache file on success; raises on a 401."""
     path = endpoint_path(endpoint, tmdb_id)
     limiter.wait()
@@ -203,6 +213,7 @@ def read_fetch_log() -> dict:
 
 
 def write_fetch_log(log: dict) -> None:
+    """Write the fetch log, one row per film and endpoint, to the file named in config."""
     config.FETCH_LOG.parent.mkdir(parents=True, exist_ok=True)
     rows = [log[k] for k in sorted(log)]
     pd.DataFrame(rows, columns=LOG_COLUMNS).to_csv(
@@ -224,7 +235,7 @@ def _log_row(r: FetchResult) -> dict:
 
 def fetch_all(
     ids: pd.DataFrame,
-    session=None,
+    session: requests.Session | None = None,
     key: str | None = None,
     refresh: bool = False,
     limit: int | None = None,
@@ -239,12 +250,12 @@ def fetch_all(
     if limit is not None:
         ids = ids.head(limit)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     log = read_fetch_log()
     limiter = RateLimiter(config.REQUESTS_PER_SECOND)
     state = {
         "session": session, "network_calls": 0, "network_seconds": 0.0,
-        "consecutive": 0, "first_network": True, "preflight_ok": True,
+        "consecutive": 0, "first_network": True, "preflight_ok": True, "opened_here": False,
     }
     rows: list[dict] = []
 
@@ -281,7 +292,7 @@ def fetch_all(
             fetched_at = entry["fetched_at"]
             age = _age_days(fetched_at, now)
         else:  # file with no log entry: trust its modification time
-            mtime = datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+            mtime = datetime.fromtimestamp(file.stat().st_mtime, UTC)
             fetched_at = mtime.isoformat(timespec="seconds")
             age = (now - mtime).total_seconds() / 86400
         if age is None or age >= max_age:
@@ -300,6 +311,7 @@ def fetch_all(
             )
         if state["session"] is None:
             state["session"] = build_session()
+            state["opened_here"] = True  # a session passed in by the caller is theirs to close
 
         started = time.perf_counter()
         try:
@@ -353,6 +365,8 @@ def fetch_all(
             add(credits_, src)
     finally:
         write_fetch_log(log)  # also on the stop path, so completed requests are kept
+        if state["opened_here"]:
+            state["session"].close()  # release the connections this stage opened
 
     results = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     for col in ("status_code", "attempts"):

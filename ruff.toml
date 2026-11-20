@@ -1,0 +1,8 @@
+line-length = 120
+target-version = "py311"
+# exploratory work is not held to the style rules and is never auto-fixed
+extend-exclude = ["explore"]
+
+[lint]
+# ruff 0.17 default rules, plus the line-length rule so the 120 limit is enforced
+extend-select = ["E501"]

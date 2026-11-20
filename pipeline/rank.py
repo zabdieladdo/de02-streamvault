@@ -41,7 +41,6 @@ WINDOWS = (WINDOW_ALL, WINDOW_2000)
 def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
     """The bundle measures and ranks for the films given: all films, or only those in one window."""
     f = films_clean[films_clean["is_franchise"].astype(bool) & films_clean["collection_id"].notna()]
-    usable = f["roi_usable"].astype(bool)
     f = f.sort_values("tmdb_id").assign(
         collection_id=lambda d: d["collection_id"].astype("int64"),
         roi_u=lambda d: d["roi"].astype("float64").where(d["roi_usable"].astype(bool)),
@@ -180,7 +179,12 @@ def middle_entry_test(films_clean: pd.DataFrame, bundles: pd.DataFrame) -> tuple
         ("note", np.nan, OPENER_BIAS_NOTE),
     ]
     summary = pd.DataFrame(rows, columns=["measure", "value", "note"])
-    return ep, summary
+    # the film count behind each pooled median, so a reader sees how many films each one rests on
+    counts = ep["position"].value_counts()
+    is_pooled = summary["measure"].str.startswith("pooled median multiple: ")
+    position = summary["measure"].str.rsplit(": ", n=1).str[-1]
+    summary["n_films"] = position.map(counts).fillna(0).where(is_pooled).astype("Int64")
+    return ep, summary[["measure", "value", "n_films", "note"]]
 
 
 # Every label names its measure: the return, meaning revenue divided by budget. The vote-count hit
@@ -348,7 +352,9 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         recent_text = np.where(
             recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
         )
-        reason = head + pd.Series(recent_text, index=fr.index) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes."
+        reason = (
+            head + pd.Series(recent_text, index=fr.index) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes."
+        )
     parts.append(
         pd.DataFrame(
             {
@@ -397,7 +403,8 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         standalone_rows(
             top, "standalone",
             prefix + _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of "
-            + str(n_stand) + " standalones" + scope + vs_median(top["roi"]) + "); released " + top["release_years"] + "; "
+            + str(n_stand) + " standalones" + scope + vs_median(top["roi"]) + "); released "
+            + top["release_years"] + "; "
             + _ordinal(top["vote_rank"]) + " of " + str(n_stand) + " by audience votes.",
         )
     )

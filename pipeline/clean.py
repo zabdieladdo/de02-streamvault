@@ -86,7 +86,9 @@ def build_review_list(films_clean: pd.DataFrame) -> pd.DataFrame:
                         "money value of $1-$10,000 on a film with few votes: kept as a possible "
                         "micro-budget film"))
     m = f["roi_extreme"].astype(bool)
-    parts.append(_entry(f[m], "roi_extreme", f.loc[m, "roi"].round(3), "multiple above 50 or below 0.05; kept in the measures"))
+    parts.append(
+        _entry(f[m], "roi_extreme", f.loc[m, "roi"].round(3), "multiple above 50 or below 0.05; kept in the measures")
+    )
     m = f["sequel_like_title"]
     parts.append(_entry(f[m], "sequel_like_title", f.loc[m, "title"],
                         "standalone whose title looks like a sequel; not reclassified"))

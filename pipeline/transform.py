@@ -1,7 +1,7 @@
 """Stages 3-5: flatten JSON, join films to credits with validate=, and set per-metric flags."""
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -28,13 +28,15 @@ QUARANTINE_COLUMNS = ["line_number", "raw_value", "reason_code", "reason_detail"
 
 # --- reading saved responses (a loop over files, like the fetch) --------------------
 
-def read_saved_responses(fetched_ids: pd.DataFrame, run_at: str | None = None):
+def read_saved_responses(
+    fetched_ids: pd.DataFrame, run_at: str | None = None
+) -> tuple[list[dict], list[dict], pd.DataFrame]:
     """Read details and credits for each fetched id.
 
     Returns (details_list, credits_list, flatten_quarantine). A film whose file is missing,
     not valid JSON, or for another id goes to quarantine and is in neither list.
     """
-    run_at = run_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_at = run_at or datetime.now(UTC).isoformat(timespec="seconds")
     ids = fetched_ids.sort_values("first_line_number")
     details_list, credits_list, bad = [], [], []
 
@@ -86,7 +88,10 @@ def _list_stats(col: pd.Series) -> pd.DataFrame:
         {
             "count": count.astype("Int64"),
             "first": names.groupby(level=0).first().reindex(col.index).astype("string"),
-            "joined": names.astype(str).groupby(level=0).agg("|".join).reindex(col.index).astype("string"),
+            "joined": (
+                names.astype(str).groupby(level=0).agg(joined="|".join)["joined"]
+                .reindex(col.index).astype("string")
+            ),
         }
     )
 
@@ -147,14 +152,20 @@ def flatten_details(details_list: list) -> pd.DataFrame:
 # --- credits -> counts and talent ------------------------------------------------
 
 def _people(df: pd.DataFrame, column: str, keep: list) -> pd.DataFrame:
-    """Explode one list-of-dicts column into one row per person per film."""
-    exploded = df[["id", column]].explode(column)
-    exploded = exploded[exploded[column].notna()]
-    if exploded.empty:
-        people = pd.DataFrame(columns=keep)
+    """One row per person per film from one list column ("cast" or "crew") of the credits records.
+
+    Uses json_normalize with the list as record_path and the film id as meta. A film whose list is
+    missing, null or empty has no rows here; its count is still 0 because flatten_credits rebuilds
+    the counts from the full list of film ids.
+    """
+    has_list = df[column].map(type).eq(list)  # a missing key (NaN) or a null (None) is not a list
+    records = df.loc[has_list, ["id", column]].to_dict("records")
+    if records:
+        people = pd.json_normalize(records, record_path=column, meta=["id"], meta_prefix="film_")
     else:
-        people = pd.json_normalize(exploded[column].tolist()).reindex(columns=keep)
-    people["tmdb_id"] = exploded["id"].astype("int64").to_numpy()
+        people = pd.DataFrame()
+    people = people.reindex(columns=[*keep, "film_id"])
+    people["tmdb_id"] = people.pop("film_id").astype("int64")
     return people.reset_index(drop=True)
 
 
@@ -228,7 +239,9 @@ def flatten_credits(credits_list: list) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 # --- joins, proven ------------------------------------------------------------------
 
-def prove_join(left, right, on, how, validate, name):
+def prove_join(
+    left: pd.DataFrame, right: pd.DataFrame, on: str, how: str, validate: str, name: str
+) -> tuple[pd.DataFrame, dict]:
     """Merge with validate= and indicator=True; return (merged, one report row)."""
     try:
         merged = pd.merge(left, right, on=on, how=how, validate=validate, indicator=True)
@@ -246,8 +259,8 @@ def prove_join(left, right, on, how, validate, name):
         "right_key_unique": bool(right[on].is_unique),
         "result_rows": len(merged),
         "both": int((status == "both").sum()),
-        "left_only": int(len(left_only)),
-        "right_only": int(len(right_only)),
+        "left_only": len(left_only),
+        "right_only": len(right_only),
         "validate": validate,
         "rows_changed": len(merged) != len(left),
         "unmatched_keys": ",".join(unmatched),
@@ -255,7 +268,9 @@ def prove_join(left, right, on, how, validate, name):
     return merged.drop(columns="_merge"), report
 
 
-def build_analysis_tables(fetched_ids, films, credit_counts, talent):
+def build_analysis_tables(
+    fetched_ids: pd.DataFrame, films: pd.DataFrame, credit_counts: pd.DataFrame, talent: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Join fetched ids, films and credit counts; prove talent attaches without fan-out."""
     base = fetched_ids[["tmdb_id", "first_line_number"]]
     step1, r1 = prove_join(base, films, "tmdb_id", "left", "one_to_one", "1 fetched_ids-films")
@@ -271,6 +286,8 @@ def build_analysis_tables(fetched_ids, films, credit_counts, talent):
 
 @dataclass
 class FlattenRun:
+    """Everything the flatten stage produced: films, talent, join report, quarantine and the ids used."""
+
     films: pd.DataFrame
     talent: pd.DataFrame
     join_report: pd.DataFrame

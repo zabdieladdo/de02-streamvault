@@ -96,7 +96,9 @@ def test_same_film_by_title_and_year():
 
 
 def test_clean_checks_pass_and_count():
-    f = flagged([{"budget": 63, "votes": 9999}, {"budget": 7_000, "votes": 5}, {"budget": 1, "revenue": 99, "votes": 5}])
+    f = flagged([
+        {"budget": 63, "votes": 9999}, {"budget": 7_000, "votes": 5}, {"budget": 1, "revenue": 99, "votes": 5},
+    ])
     report = checks.check_clean_stage(f, as_of_year=2026)
     assert report["passed"].all()
     assert set(report["check_id"]) == {"C-15", "C-16", "C-17", "C-18", "C-19", "C-20", "C-ROI"}

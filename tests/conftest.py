@@ -1,6 +1,12 @@
 """Shared fixtures: a helper that writes small id-list CSV files to tmp_path."""
+import json
+import re
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
+
+from pipeline import config
 
 
 @pytest.fixture
@@ -17,12 +23,6 @@ def write_ids(tmp_path):
 
 
 # --- fetch-stage helpers -------------------------------------------------------
-import json
-import re
-from types import SimpleNamespace
-
-from pipeline import config
-
 TEST_KEY = "dummy-value-for-tests"  # not a real credential
 
 
@@ -59,6 +59,10 @@ class FakeSession:
     def __init__(self, script=None):
         self.script = dict(script or {})
         self.calls = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get(self, url, params=None, timeout=None):
         path = url.removeprefix(config.API_BASE)
@@ -125,7 +129,9 @@ def make_films(rows: list[dict]) -> pd.DataFrame:
                 "vote_count": r.get("votes", 1000),
                 "is_franchise": bool(franchise),
                 "collection_id": (franchise if franchise is not True else 100 + i) if franchise else pd.NA,
-                "collection_name": f"Collection {franchise if franchise is not True else 100 + i}" if franchise else pd.NA,
+                "collection_name": (
+                    f"Collection {franchise if franchise is not True else 100 + i}" if franchise else pd.NA
+                ),
                 "adult": False,
                 "video": False,
             }

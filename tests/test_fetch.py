@@ -1,5 +1,5 @@
 """Tests for the fetch stage. No network: a FakeSession returns scripted responses."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -50,7 +50,7 @@ def age_log(days, **match):
     mask = pd.Series(True, index=log.index)
     for col, val in match.items():
         mask &= log[col] == str(val)
-    old = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    old = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
     log.loc[mask, "fetched_at"] = old
     log.to_csv(config.FETCH_LOG, index=False)
 
@@ -317,3 +317,44 @@ def test_cache_file_without_log_entry_uses_mtime():
     second = FakeSession()
     r = run(make_ids(603), session=second)
     assert second.calls == [] and set(r.results["outcome"]) == {"cached"}
+
+
+# --- the session is closed only when the fetch stage opened it --------------------------
+
+def test_a_session_passed_in_is_not_closed():
+    session = FakeSession()
+    run(make_ids(603), session=session)
+    assert session.calls and session.closed is False  # the caller owns it
+
+
+def test_a_session_built_inside_is_closed(monkeypatch):
+    built = []
+
+    def build():
+        built.append(FakeSession())
+        return built[-1]
+
+    monkeypatch.setattr(fetch, "build_session", build)
+    fetch.fetch_all(make_ids(603, 155), key=TEST_KEY)  # no session given: the stage opens its own
+    assert len(built) == 1 and built[0].calls and built[0].closed is True
+
+
+def test_a_session_built_inside_is_also_closed_when_the_run_stops(monkeypatch):
+    built = []
+
+    def build():
+        built.append(FakeSession({"/movie/603": FakeResponse(401, b"{}")}))
+        return built[-1]
+
+    monkeypatch.setattr(fetch, "build_session", build)
+    with pytest.raises(PipelineStopError, match="401"):
+        fetch.fetch_all(make_ids(603), key=TEST_KEY)
+    assert built[0].closed is True
+
+
+def test_no_session_is_opened_when_everything_is_cached(monkeypatch):
+    run(make_ids(603))  # fills the cache
+    built = []
+    monkeypatch.setattr(fetch, "build_session", lambda: built.append(FakeSession()) or built[-1])
+    fetch.fetch_all(make_ids(603), key=TEST_KEY)
+    assert built == []  # nothing to open, so nothing to close
