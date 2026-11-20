@@ -27,5 +27,5 @@ Cite these numbers in every deliverable. Sources: `de02-lab-plan.md` (S01-S20), 
 | S19 | The 31 October review date is fictional; today's date does not affect the analysis | Brief | None | |
 | S20 | Films with `status` other than "Released" are excluded from money KPIs | Judgement | Unreleased films have no revenue by definition and would look like zeros | |
 | S21 | Budget and revenue are in US dollars | TMDb contribution guidance; the data has no currency field | One film's ROI is off by the exchange rate; check C-17 catches scale errors only | Listed under "could not verify" |
-| S22 | Ids above 7 million are not valid TMDb ids, to be confirmed by the API | Profile of the id list: 7733901, 8471293, 8471294, 9412887, 9412888 | If some resolve, they join the analysis | Not excluded at load; the API decides and the status is logged |
+| S22 | Ids above 7 million are not valid TMDb ids. Confirmed 20 Nov: all five returned "not found" (F-05). | Profile of the id list: 7733901, 8471293, 8471294, 9412887, 9412888 | If some resolve, they join the analysis | Not excluded at load; the API decides and the status is logged |
 | S23 | StreamVault would need a commercial TMDb agreement to use this in production | TMDb terms 1.C and 2.A (commercial use) | Stated as a risk, not a legal finding | Goes in the memo's "could not stand behind" |
