@@ -21,7 +21,7 @@ Any IMDb ids in next year's studio batch are turned into the right films, or fla
 
 ## What it cost
 
-- My time on it: [X hours over Y days], covering the spec, the build, the tests (34 tests, with a fake session and no network) and this write-up.
+- My time on it: 2 hours over 3 days, covering the spec, the build, the tests (34 tests, with a fake session and no network) and this write-up.
 - One extra endpoint, TMDb's lookup by IMDb id, outside the two the brief names. Only this optional command uses it.
 - One more folder of saved responses (`data/raw/find/`) under the same rules as the other saved responses: not shared, and kept at most 180 days.
 - A person still decides whether to use the suggested list. A full run clears the `.csv` files in `out/`, so the suggestion has to be copied out of `out/` before it is used as the input (`STREAMVAULT_INPUT_IDS`), and an ambiguous or failed id is reported but never added.
