@@ -160,3 +160,75 @@ def check_fetch_stage(run) -> pd.DataFrame:
         f"{n_failed} of {len(ids)} ids failed to fetch ({pct:.1f}%, limit {config.INCOMPLETE_THRESHOLD_PCT}%)")
 
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
+
+
+def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
+    """Checks for stage 3. `run` is a transform.FlattenRun; same columns as the other checks."""
+    from pipeline.transform import imdb_crossref  # local import: transform imports fetch
+
+    films, talent, joins = run.films, run.talent, run.join_report
+    stage = "flatten"
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": stage,
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    n_in, n_q = len(run.fetched_ids), len(run.quarantine)
+
+    add("C-10", "One row per film",
+        films["tmdb_id"].is_unique and len(films) == n_in - n_q,
+        f"{len(films)} rows, {films['tmdb_id'].nunique()} distinct ids; {n_in} in, {n_q} quarantined")
+
+    no_cast = int((films["n_cast"] == 0).sum())
+    no_dir = int((films["n_directors"] == 0).sum())
+    few_leads = int((films["n_lead_actors"] < config.LEAD_ACTOR_COUNT).sum())
+    missing = set(run.credits_ids) - set(films["tmdb_id"])
+    add("C-11", "Flattening drops no film", not missing,
+        f"{len(missing)} films lost; {no_cast} with no cast, {no_dir} with no director, "
+        f"{few_leads} with fewer than {config.LEAD_ACTOR_COUNT} lead actors")
+
+    int_ok = all(pd.api.types.is_integer_dtype(films[c]) for c in ("budget", "revenue", "vote_count"))
+    date_ok = pd.api.types.is_datetime64_any_dtype(films["release_date"])
+    n_empty = int((films["release_date_raw"] == "").sum())
+    n_bad = int(films["release_date_unparseable"].sum())
+    add("C-12", "Columns have the types the metrics need", int_ok and date_ok,
+        f"budget, revenue, vote_count integer: {int_ok}; release_date datetime: {date_ok}; "
+        f"{n_empty} empty dates, {n_bad} unparseable")
+
+    names_per_collection = films.dropna(subset=["collection_id"]).groupby("collection_id")["collection_name"].nunique()
+    add("C-13", "One name per collection", bool((names_per_collection <= 1).all()),
+        f"{len(names_per_collection)} collections; {int((names_per_collection > 1).sum())} with more than one name")
+
+    bad_joins = joins[joins["rows_changed"] | (joins["left_only"] > 0)]
+    add("C-14", "Joins neither drop nor duplicate films", bad_joins.empty,
+        f"{len(joins)} joins proven; {len(bad_joins)} changed the row count or left rows unmatched")
+
+    key_unique = not talent.duplicated(["tmdb_id", "person_id", "role"]).any()
+    talent_join = joins[joins["join"].str.startswith("3")]
+    linked = bool((talent_join["left_only"] == 0).all())
+    add("C-14t", "Talent keys unique and linked", key_unique and linked,
+        f"{len(talent)} talent rows; key unique: {key_unique}; unmatched to a film: "
+        f"{int(talent_join['left_only'].sum())}")
+
+    add("C-03g", "Conservation through flatten", n_in == len(films) + n_q,
+        f"fetched {n_in} = films {len(films)} + quarantined {n_q}")
+
+    cross = imdb_crossref(films, load_quarantine)
+    if cross.empty:
+        text = "no IMDb ids were quarantined at load"
+    else:
+        found = cross.dropna(subset=["tmdb_id"])
+        parts = [
+            f"{i} matches film {int(f)} ({t})"
+            for i, f, t in zip(found["imdb_id"], found["tmdb_id"], found["title"])
+        ]
+        parts += [f"{v} matches no fetched film" for v in cross.loc[cross["tmdb_id"].isna(), "imdb_id"]]
+        text = "; ".join(parts)
+    add("I-01", "IMDb id cross-reference (information)", True, text)
+
+    return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
