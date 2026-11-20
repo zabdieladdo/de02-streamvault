@@ -108,3 +108,36 @@ def test_check_catches_negative_money_and_bad_year():
     f = flagged([{"budget": -5}, {"year": 1850}])
     report = checks.check_clean_stage(f, as_of_year=2026).set_index("check_id")
     assert not report.loc["C-15", "passed"] and not report.loc["C-16", "passed"]
+
+
+def test_review_list_has_one_row_per_film_per_reason():
+    f = flagged([
+        {"title": "Wrong", "budget": 63, "votes": 20_000},
+        {"title": "Micro", "budget": 7_000, "revenue": 90_000, "votes": 30},
+        {"title": "Big II", "budget": 1_000_000, "revenue": 90_000_000},
+        {"title": "Dup", "year": 2005}, {"title": "dup.", "year": 2005},
+    ])
+    review = clean.build_review_list(f)
+    assert list(review.columns) == ["tmdb_id", "title", "release_year", "check", "value", "note"]
+    by = review.groupby("check")["title"].apply(list)
+    assert by["units_error_likely"] == ["Wrong"]
+    assert by["possible_micro_budget"] == ["Micro"]
+    assert by["roi_extreme"] == ["Big II"]
+    assert by["sequel_like_title"] == ["Big II"]
+    assert sorted(by["possible_same_film"]) == ["Dup", "dup."]
+    assert not review.duplicated(["tmdb_id", "check"]).any()
+
+
+def test_largest_values_are_listed_even_when_nothing_else_is():
+    f = flagged([{"title": f"F{i}", "budget": 1_000_000 + i, "revenue": 3_000_000 + i} for i in range(8)])
+    review = clean.build_review_list(f)
+    assert set(review["check"]) == {"largest_budget", "largest_revenue"}  # an empty review is valid
+    top = review[review["check"] == "largest_budget"]
+    assert len(top) == 5 and top["value"].astype(int).max() == 1_000_007
+
+
+def test_review_list_does_not_change_the_films():
+    f = flagged([{"budget": 63, "votes": 20_000}])
+    before = f.copy()
+    clean.build_review_list(f)
+    pd.testing.assert_frame_equal(f, before)

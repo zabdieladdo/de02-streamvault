@@ -55,3 +55,49 @@ def add_flags(films: pd.DataFrame) -> pd.DataFrame:
     out["title_year_key"] = letters + "|" + year
     out["possible_same_film"] = out["title_year_key"].duplicated(keep=False) & (letters != "")
     return out
+
+
+REVIEW_COLUMNS = ["tmdb_id", "title", "release_year", "check", "value", "note"]
+
+
+def _entry(films: pd.DataFrame, check: str, value: pd.Series, note: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "tmdb_id": films["tmdb_id"], "title": films["title"],
+            "release_year": films["release_year"], "check": check,
+            "value": value.astype("string"), "note": note,
+        }
+    )
+
+
+def build_review_list(films_clean: pd.DataFrame) -> pd.DataFrame:
+    """One row per film per reason, for a person to look at. Nothing here changes the numbers."""
+    f = films_clean
+    money = ("budget " + f["budget"].astype("string") + "; revenue " + f["revenue"].astype("string")
+             + "; votes " + f["vote_count"].astype("string"))
+    parts = []
+
+    m = f["units_error_likely"]
+    parts.append(_entry(f[m], "units_error_likely", money[m],
+                        "money value of $1-$10,000 on a well-voted film: likely wrong units; "
+                        "excluded from revenue/budget only; value not corrected"))
+    m = f["possible_micro_budget"]
+    parts.append(_entry(f[m], "possible_micro_budget", money[m],
+                        "money value of $1-$10,000 on a film with few votes: kept as a possible "
+                        "micro-budget film"))
+    m = f["roi_extreme"].astype(bool)
+    parts.append(_entry(f[m], "roi_extreme", f.loc[m, "roi"].round(3), "multiple above 50 or below 0.05; kept in the measures"))
+    m = f["sequel_like_title"]
+    parts.append(_entry(f[m], "sequel_like_title", f.loc[m, "title"],
+                        "standalone whose title looks like a sequel; not reclassified"))
+    m = f["possible_same_film"]
+    parts.append(_entry(f[m], "possible_same_film", f.loc[m, "title_year_key"],
+                        "same title and year as another row; both kept"))
+
+    note = "listed for a person to confirm; an extra digit would show here"
+    for column in ("budget", "revenue"):  # a short fixed list, not a loop over films
+        top = f.nlargest(config.TOP_MONEY_REVIEW_N, column)
+        parts.append(_entry(top, f"largest_{column}", top[column], note))
+
+    review = pd.concat(parts, ignore_index=True)
+    return review[REVIEW_COLUMNS]
