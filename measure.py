@@ -12,7 +12,10 @@ from pathlib import Path
 from pipeline import config, measurement
 from pipeline.errors import PipelineStopError
 
-DEFAULTS = {"warm_runs": 10, "cold_copies": 3, "cold_followups": 4}
+DEFAULTS = {
+    "warm_runs": 10, "cold_copies": 3, "cold_followups": 4, "sizes": list(measurement.GROWTH_SIZES),
+    "growth_followups": 4,
+}
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -22,6 +25,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="fresh copies of the responses for the cold-start test")
     parser.add_argument("--cold-followups", type=int, default=DEFAULTS["cold_followups"],
                         help="warm runs after each cold run")
+    parser.add_argument("--sizes", type=int, nargs="*", default=DEFAULTS["sizes"],
+                        help="synthetic film counts for the growth test (none to skip it)")
+    parser.add_argument("--growth-followups", type=int, default=DEFAULTS["growth_followups"],
+                        help="warm runs after the cold run at each size")
     parser.add_argument("--out", type=Path, default=config.REPO_ROOT / "out" / "measurement",
                         help="where the results are written")
     return parser.parse_args(argv)
@@ -30,7 +37,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     """Run the measurements, write out/measurement/ and print the summary."""
     args = parse_args(argv)
-    options = {"warm_runs": args.warm_runs, "cold_copies": args.cold_copies, "cold_followups": args.cold_followups}
+    options = {
+        "warm_runs": args.warm_runs, "cold_copies": args.cold_copies, "cold_followups": args.cold_followups,
+        "sizes": args.sizes, "growth_followups": args.growth_followups,
+    }
     try:
         with tempfile.TemporaryDirectory(prefix="streamvault_measure_") as tmp:
             tables = measurement.run_all(options, Path(tmp))
@@ -39,6 +49,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     measurement.write_results(args.out, tables)
     print(measurement.format_report(tables["timing_summary.csv"]))
+    print(measurement.verdict(tables["timing_summary.csv"]))
     print(f"Results written to {args.out}")
     return 0
 

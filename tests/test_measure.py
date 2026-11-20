@@ -102,7 +102,8 @@ def test_warm_runs_are_all_warm_numbered_and_leave_the_real_snapshot_alone(tmp_p
 def test_the_command_writes_the_two_tables_and_never_touches_the_real_outputs(tmp_path, capsys):
     real_out = tree_hash(REPO / "out", "*.csv")
     real_raw = tree_hash(REPO / "data" / "raw")
-    assert measure.main(["--warm-runs", "2", "--cold-copies", "0", "--out", str(tmp_path / "result")]) == 0
+    only_warm = ["--warm-runs", "2", "--cold-copies", "0", "--sizes"]
+    assert measure.main([*only_warm, "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     summary = pd.read_csv(tmp_path / "result" / "timing_summary.csv")
     assert list(runs.columns) == measurement.TIMING_COLUMNS and len(runs) == 2
@@ -116,7 +117,7 @@ def test_the_command_stops_with_a_message_when_a_run_fails(tmp_path, monkeypatch
         raise measurement.MeasurementError("A measured run failed (exit 1); not timed.")
 
     monkeypatch.setattr(measurement, "run_once", broken)
-    assert measure.main(["--warm-runs", "1", "--cold-copies", "0", "--out", str(tmp_path / "result")]) == 1
+    assert measure.main(["--warm-runs", "1", "--cold-copies", "0", "--sizes", "--out", str(tmp_path / "result")]) == 1
     assert "STOPPED: A measured run failed" in capsys.readouterr().out
     assert not (tmp_path / "result").exists()
 
@@ -172,7 +173,166 @@ def test_a_cold_run_is_still_fully_cached_and_makes_no_request(cold):
 
 
 def test_the_command_runs_the_cold_start_test_when_asked(tmp_path):
-    assert measure.main(["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1",
-                         "--out", str(tmp_path / "result")]) == 0
+    cold_only = ["--warm-runs", "1", "--cold-copies", "1", "--cold-followups", "1", "--sizes"]
+    assert measure.main([*cold_only, "--out", str(tmp_path / "result")]) == 0
     runs = pd.read_csv(tmp_path / "result" / "timing_runs.csv")
     assert list(runs["state"]) == ["warm", "cold", "warm"] and list(runs["copy"]) == [1, 1, 1]
+
+
+# --- synthetic responses and growth ----------------------------------------------------------------------
+
+FIXED_TIME = "2026-11-20T00:00:00+00:00"
+
+
+def synthetic(tmp_path, n=40, **kw):
+    kw.setdefault("fetched_at", FIXED_TIME)
+    return measurement.make_synthetic(n, tmp_path / f"synthetic_{n}", **kw)
+
+
+def use_synthetic_folders(monkeypatch, ids_file, raw):
+    """Point the in-process pipeline at a synthetic folder, with outputs beside it."""
+    out = raw.parent / "out"
+    monkeypatch.setattr(config, "INPUT_IDS", ids_file)
+    monkeypatch.setattr(config, "RAW_DIR", raw)
+    monkeypatch.setattr(config, "RAW_DETAILS_DIR", raw / "details")
+    monkeypatch.setattr(config, "RAW_CREDITS_DIR", raw / "credits")
+    monkeypatch.setattr(config, "FETCH_LOG", raw / "fetch_log.csv")
+    monkeypatch.setattr(config, "OUT_DIR", out)
+    monkeypatch.setattr(config, "LIMITED_OUT_DIR", out / "limited")
+    return out
+
+
+def test_a_synthetic_response_passes_the_same_flatten_as_a_real_one(tmp_path, monkeypatch):
+    from pipeline import transform
+
+    ids_file, raw = synthetic(tmp_path, 40)
+    use_synthetic_folders(monkeypatch, ids_file, raw)
+    ids = pd.read_csv(ids_file)["tmdb_id"]
+    fetched = pd.DataFrame({"tmdb_id": ids, "first_line_number": range(2, len(ids) + 2)})
+    run = transform.flatten_stage(fetched)
+
+    films = run.films
+    assert len(run.quarantine) == 0 and len(films) == 40
+    assert sorted(films["tmdb_id"]) == list(range(1000, 1040)) and films["tmdb_id"].is_unique
+    assert (films["n_cast"] == 50).all() and films["n_crew"].between(151, 152).all()  # 150 crew plus 1 or 2 directors
+    assert (films["n_lead_actors"] == 3).all() and films["n_directors"].between(1, 2).all()
+    assert (films["status"] == "Released").all() and (films["budget"] >= 300_000).all()
+    assert films["release_year"].between(1960, 2024).all() and films["title"].is_unique
+    assert (films["revenue"] > 0).all() and films["release_date_unparseable"].eq(False).all()
+    assert len(run.talent) == 40 * 3 + int(films["n_directors"].sum())
+
+
+def test_about_85_percent_of_synthetic_films_sit_in_collections_of_2_to_8(tmp_path, monkeypatch):
+    from pipeline import transform
+
+    ids_file, raw = synthetic(tmp_path, 200)
+    use_synthetic_folders(monkeypatch, ids_file, raw)
+    ids = pd.read_csv(ids_file)["tmdb_id"]
+    films = transform.flatten_stage(pd.DataFrame({"tmdb_id": ids, "first_line_number": range(2, 202)})).films
+    sizes = films.groupby("collection_id").size()
+    assert sizes.between(2, 8).all()
+    assert 0.83 <= films["is_franchise"].mean() <= 0.85 and films["is_franchise"].sum() == sizes.sum()
+
+
+def test_a_synthetic_folder_runs_through_the_whole_pipeline_with_no_failed_check(tmp_path):
+    import json
+
+    ids_file, raw = synthetic(tmp_path, 40)
+    row = measurement.run_once(raw, ids_file, tmp_path / "out")
+    assert row["wall_s"] > 0 and all(row[k] > 0 for k in measurement.STAGE_KEYS)
+    record = json.loads((tmp_path / "out" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert record["films_rows"] == 40 and record["checks_failed"] == 0 and record["stopped"] is None
+    assert record["fetch_network_calls"] == 0 and record["fetch_cached"] == 80  # everything came from the cache
+
+
+def test_a_synthetic_run_needs_no_network_at_all(tmp_path, monkeypatch, fetch_env):
+    import run_pipeline
+    from pipeline import fetch
+
+    ids_file, raw = synthetic(tmp_path, 25)
+    use_synthetic_folders(monkeypatch, ids_file, raw)
+
+    def no_session():
+        raise AssertionError("the fetch stage tried to open a connection")
+
+    monkeypatch.setattr(fetch, "build_session", no_session)
+    assert run_pipeline.main([]) == 0
+
+
+def test_the_same_seed_gives_byte_identical_files_and_another_seed_does_not(tmp_path):
+    first = synthetic(tmp_path / "a", 30)
+    second = synthetic(tmp_path / "b", 30)
+    assert tree_hash(first[1].parent) == tree_hash(second[1].parent)
+    assert first[0].read_bytes() == second[0].read_bytes()  # the id list too
+    other = synthetic(tmp_path / "c", 30, seed=1)
+    assert tree_hash(other[1].parent) != tree_hash(first[1].parent)
+
+
+def test_the_synthetic_files_contain_no_tmdb_text(tmp_path):
+    _, raw = synthetic(tmp_path, 5)
+    text = (raw / "details" / "1000.json").read_text(encoding="utf-8")
+    assert "An invented film for timing." in text and "Film " in text
+
+
+def test_the_fetch_log_marks_every_synthetic_file_as_fetched(tmp_path):
+    ids_file, raw = synthetic(tmp_path, 8)
+    log = pd.read_csv(raw / "fetch_log.csv")
+    assert len(log) == 16 and set(log["outcome"]) == {"ok"} and set(log["fetched_at"]) == {FIXED_TIME}
+    assert set(log["endpoint"]) == {"details", "credits"}
+    assert len(list((raw / "details").glob("*.json"))) == len(list((raw / "credits").glob("*.json"))) == 8
+    assert ids_file.read_bytes().startswith(b"tmdb_id\r\n1000\r\n")
+
+
+# --- growth ------------------------------------------------------------------------------------------------
+
+def test_growth_runs_one_cold_run_then_warm_runs_at_each_size_and_say_where_the_outputs_are(tmp_path):
+    rows, outputs = measurement.growth_runs(tmp_path, sizes=(12, 24), warm_after=1)
+    assert [(r["size"], r["state"]) for r in rows] == [(12, "cold"), (12, "warm"), (24, "cold"), (24, "warm")]
+    assert {r["scenario"] for r in rows} == {"synthetic"} and set(outputs) == {12, 24}
+    assert len(pd.read_csv(outputs[24] / "films.csv")) == 24
+
+
+def growth_summary():
+    rows = []
+    for size, factor in ((127, 1.0), (500, 4.0), (5000, 40.0)):
+        for state in ("cold", "warm"):
+            for metric, base in {"flatten": 0.10, "rank": 0.05, "stage_sum_s": 0.30, "wall_s": 2.0}.items():
+                rows.append({"scenario": "synthetic", "size": size, "state": state, "metric": metric, "runs": 4,
+                             "median_s": base * factor * (2 if state == "cold" else 1), "p95_s": 0, "worst_s": 0})
+    return pd.DataFrame(rows, columns=measurement.SUMMARY_COLUMNS)
+
+
+def test_the_growth_table_gives_warm_medians_and_the_ratio_between_sizes():
+    table = measurement.growth_table(growth_summary()).set_index("metric")
+    assert list(table.columns) == [
+        "median_s_127", "median_s_500", "median_s_5000", "ratio_500_127", "ratio_5000_500",
+    ]
+    assert table.loc["flatten", "median_s_127"] == pytest.approx(0.10)
+    assert table.loc["flatten", "median_s_500"] == pytest.approx(0.40)
+    assert table.loc["flatten", "ratio_500_127"] == pytest.approx(4.0)
+    assert table.loc["rank", "ratio_5000_500"] == pytest.approx(10)
+    assert list(table.index) == ["flatten", "rank", "stage_sum_s", "wall_s"]  # stages in pipeline order, totals last
+
+
+def test_the_verdict_says_met_or_not_met_with_the_cold_and_warm_times():
+    slow = "budget (10 s wall, 500 titles, cached): not met, cold 16.0 s, warm 8.0 s"
+    assert measurement.verdict(growth_summary()) == slow
+    fast = growth_summary().assign(median_s=lambda d: d["median_s"] / 4)
+    assert measurement.verdict(fast) == "budget (10 s wall, 500 titles, cached): met, cold 4.0 s, warm 2.0 s"
+
+
+def test_the_verdict_says_so_when_there_is_no_500_title_run():
+    summary = growth_summary()
+    text = measurement.verdict(summary[summary["size"] != 500])
+    assert text == "budget (10 s wall, 500 titles, cached): not measured (no 500-title run)"
+
+
+def test_the_command_writes_the_growth_table_and_prints_the_verdict(tmp_path, capsys):
+    real_raw, real_out = tree_hash(REPO / "data" / "raw"), tree_hash(REPO / "out", "*.csv")
+    assert measure.main(["--warm-runs", "1", "--cold-copies", "0", "--sizes", "10", "20", "--growth-followups", "1",
+                         "--out", str(tmp_path / "result")]) == 0
+    growth = pd.read_csv(tmp_path / "result" / "growth.csv")
+    assert list(growth.columns) == ["metric", "median_s_10", "median_s_20", "ratio_20_10"]
+    printed = capsys.readouterr().out
+    assert "budget (10 s wall, 500 titles, cached): not measured" in printed
+    assert tree_hash(REPO / "data" / "raw") == real_raw and tree_hash(REPO / "out", "*.csv") == real_out
