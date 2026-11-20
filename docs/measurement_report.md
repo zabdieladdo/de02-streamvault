@@ -19,6 +19,7 @@ The brief sets no numeric target (confirmed 19 Nov). The fetch is timed separate
 | First film only (`--limit 1`): 2 requests | 1 | 0.94 s | n/a | 0.94 s | No target set |
 | Full fetch, every response saved: 0 requests, 229 answered from the cache | 3 | 0.076 s | n/a | 0.089 s | No target set |
 | One request (all 229 in the fetch log) | 229 | 0.299 s | 0.382 s | 0.690 s | Not applicable |
+| Round trip per request, latency script (warm connection), 20 Nov 03:21 UTC | 1 × 9 requests | 0.264 s | — | 0.393 s | n/a |
 
 - The cold fetch made 227 requests, not 229, because id 155 was already saved from the `--limit 1` run just before it.
 - Every request was answered on the first attempt: no retries and no 429 in 229 requests.
@@ -35,3 +36,4 @@ Not yet measured; added when the analysis stage is built.
 - One machine, with the network and time of day not controlled.
 - At 500 titles the fetch would be about 1,000 requests, which at this pace is roughly 5 minutes. This is an estimate worked out from this run, not a measurement.
 - The cached runs measure reading saved files and writing the log; they say nothing about how long the analysis stage will take.
+- The latency script measures one request at a time with nothing else running; the fetch-log figures (median 0.299 s) are taken inside the full run. Both are kept because they measure different things.
