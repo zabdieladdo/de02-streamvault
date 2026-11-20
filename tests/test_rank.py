@@ -399,3 +399,44 @@ def test_empty_list_gives_an_empty_shortlist():
     f = flagged([{"budget": 0}])
     sl = rank.build_shortlist(rank.build_bundles(f), f)
     assert len(sl) == 0 and list(sl.columns) == rank.SHORTLIST_COLUMNS
+
+
+# --- deal note ----------------------------------------------------------------------
+
+def deal_for(rows):
+    from pipeline import metrics
+
+    f = flagged(rows)
+    ref = rank.reference_values(f)
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    return rank.deal_note_figures(rank.build_bundles(f), kpis, ref["list_median_roi"]), ref
+
+
+def test_deal_note_ratios_equal_hand_computed_values():
+    # list: bundle 1 (4, 8, 12) and standalones 2, 4, 6 -> list median of 6 films is (4 + 6) / 2 = 5
+    rows = bundle_rows(1, [4, 8, 12], years=[1999, 2004, 2010]) + [
+        {"tmdb_id": 50, "title": "a", **money(2)}, {"tmdb_id": 51, "title": "b", **money(4)}, {"tmdb_id": 52, "title": "c", **money(6)}]
+    dn, ref = deal_for(rows)
+    r = dn.iloc[0]
+    assert ref["list_median_roi"] == 5
+    assert r["median_roi"] == 8 and r["relative_value"] == 8 / 5
+    assert r["weakest_roi"] == 4 and r["walkaway_ratio"] == 4 / 5 and r["weakest_title"] == "1-1"
+    assert r["standalone_median_roi"] == 4 and r["relative_to_standalone"] == 2.0
+    assert r["n_on_list"] == 3 and r["release_years"] == "1999-2010"
+    assert r["median_roi_2000_on"] == 10 and r["straddles_2000"] and r["thin_2000_on"]  # two films from 2000 is thin
+
+
+def test_deal_note_is_the_top_ranked_bundle():
+    rows = bundle_rows(1, [2, 3, 4]) + bundle_rows(2, [8, 9, 10], base_id=10)
+    dn, _ = deal_for(rows)
+    assert len(dn) == 1 and dn.loc[0, "collection_name"] == "Collection 2"
+
+
+def test_deal_note_flags_a_thin_recent_figure():
+    dn, _ = deal_for(bundle_rows(1, [2, 3, 4], years=[1995, 1999, 2003]))
+    assert dn.loc[0, "thin_2000_on"] and dn.loc[0, "straddles_2000"]
+
+
+def test_no_rankable_bundle_gives_no_deal_note():
+    dn, _ = deal_for(bundle_rows(1, [2, 3]))
+    assert len(dn) == 0 and list(dn.columns) == rank.DEAL_NOTE_COLUMNS

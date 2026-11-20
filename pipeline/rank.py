@@ -344,3 +344,37 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame) -> pd.Data
         return pd.DataFrame(columns=SHORTLIST_COLUMNS)
     out[["rank", "rank_by_multiple", "vote_rank"]] = out[["rank", "rank_by_multiple", "vote_rank"]].astype("int64")
     return out[SHORTLIST_COLUMNS]
+
+
+DEAL_NOTE_COLUMNS = [
+    "collection_name", "n_on_list", "release_years", "median_roi", "list_median_roi", "relative_value",
+    "weakest_title", "weakest_roi", "walkaway_ratio", "median_roi_2000_on", "straddles_2000",
+    "thin_2000_on", "standalone_median_roi", "relative_to_standalone", "median_vote_count", "vote_rank",
+]
+
+
+def deal_note_figures(bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi: float) -> pd.DataFrame:
+    """The figures for the strongest bundle, all as ratios: no price exists in the brief.
+
+    relative_value is the bundle median multiple divided by the list median multiple (what drove the
+    view); walkaway_ratio is the weakest film multiple divided by the same list median.
+    """
+    top = bundles[bundles["rankable"] & (bundles["bundle_rank"] == 1)].copy()
+    if top.empty:
+        return pd.DataFrame(columns=DEAL_NOTE_COLUMNS)
+    stand = kpis[(kpis["window"] == "all years") & (kpis["group"] == "standalone")]["median_roi"]
+    stand_median = float(stand.iloc[0]) if len(stand) else float("nan")
+    return pd.DataFrame(
+        {
+            "collection_name": top["collection_name"], "n_on_list": top["n_on_list"],
+            "release_years": _years(top["first_year"], top["last_year"]),
+            "median_roi": top["median_roi"], "list_median_roi": list_median_roi,
+            "relative_value": top["median_roi"] / list_median_roi,
+            "weakest_title": top["weakest_title"], "weakest_roi": top["weakest_roi"],
+            "walkaway_ratio": top["weakest_roi"] / list_median_roi,
+            "median_roi_2000_on": top["median_roi_2000_on"], "straddles_2000": top["straddles_2000"],
+            "thin_2000_on": top["thin_2000_on"], "standalone_median_roi": stand_median,
+            "relative_to_standalone": top["median_roi"] / stand_median,
+            "median_vote_count": top["median_vote_count"], "vote_rank": top["vote_rank"],
+        }
+    )[DEAL_NOTE_COLUMNS].reset_index(drop=True)
