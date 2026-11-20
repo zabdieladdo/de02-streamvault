@@ -28,7 +28,9 @@ QUARANTINE_COLUMNS = ["line_number", "raw_value", "reason_code", "reason_detail"
 
 # --- reading saved responses (a loop over files, like the fetch) --------------------
 
-def read_saved_responses(fetched_ids: pd.DataFrame, run_at: str | None = None):
+def read_saved_responses(
+    fetched_ids: pd.DataFrame, run_at: str | None = None
+) -> tuple[list[dict], list[dict], pd.DataFrame]:
     """Read details and credits for each fetched id.
 
     Returns (details_list, credits_list, flatten_quarantine). A film whose file is missing,
@@ -237,7 +239,9 @@ def flatten_credits(credits_list: list) -> tuple[pd.DataFrame, pd.DataFrame]:
 
 # --- joins, proven ------------------------------------------------------------------
 
-def prove_join(left, right, on, how, validate, name):
+def prove_join(
+    left: pd.DataFrame, right: pd.DataFrame, on: str, how: str, validate: str, name: str
+) -> tuple[pd.DataFrame, dict]:
     """Merge with validate= and indicator=True; return (merged, one report row)."""
     try:
         merged = pd.merge(left, right, on=on, how=how, validate=validate, indicator=True)
@@ -264,7 +268,9 @@ def prove_join(left, right, on, how, validate, name):
     return merged.drop(columns="_merge"), report
 
 
-def build_analysis_tables(fetched_ids, films, credit_counts, talent):
+def build_analysis_tables(
+    fetched_ids: pd.DataFrame, films: pd.DataFrame, credit_counts: pd.DataFrame, talent: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Join fetched ids, films and credit counts; prove talent attaches without fan-out."""
     base = fetched_ids[["tmdb_id", "first_line_number"]]
     step1, r1 = prove_join(base, films, "tmdb_id", "left", "one_to_one", "1 fetched_ids-films")
@@ -280,6 +286,8 @@ def build_analysis_tables(fetched_ids, films, credit_counts, talent):
 
 @dataclass
 class FlattenRun:
+    """Everything the flatten stage produced: films, talent, join report, quarantine and the ids used."""
+
     films: pd.DataFrame
     talent: pd.DataFrame
     join_report: pd.DataFrame

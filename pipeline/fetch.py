@@ -37,6 +37,8 @@ REASON_ORDER = list(REASON_DETAIL)
 
 @dataclass
 class FetchResult:
+    """The outcome of one request, or one answer read from the cache, for a film and an endpoint."""
+
     tmdb_id: int
     endpoint: str
     path: str
@@ -52,6 +54,8 @@ class FetchResult:
 
 @dataclass
 class FetchRun:
+    """Everything the fetch stage produced: results, quarantine, ids processed and call counts."""
+
     results: pd.DataFrame
     quarantine: pd.DataFrame
     ids_processed: pd.DataFrame
@@ -88,10 +92,12 @@ class RateLimiter:
     """Keep network requests at least 1 / requests_per_second seconds apart."""
 
     def __init__(self, requests_per_second: float):
+        """Allow at most `requests_per_second` network requests a second."""
         self.interval = 1.0 / requests_per_second
         self._last: float | None = None
 
     def wait(self) -> None:
+        """Sleep, if needed, so the next request starts one interval after the last."""
         if self._last is not None:
             gap = self.interval - (time.monotonic() - self._last)
             if gap > 0:
@@ -116,10 +122,12 @@ def _age_days(iso: str, now: datetime) -> float | None:
 
 
 def endpoint_path(endpoint: str, tmdb_id: int) -> str:
+    """The API path for an endpoint and film id, from the templates in config."""
     return config.ENDPOINTS[endpoint].format(id=tmdb_id)
 
 
 def cache_file(endpoint: str, tmdb_id: int) -> Path:
+    """The file where the raw JSON for this film and endpoint is saved."""
     directory = config.RAW_DETAILS_DIR if endpoint == "details" else config.RAW_CREDITS_DIR
     return directory / f"{tmdb_id}.json"
 
@@ -144,7 +152,9 @@ def _message(response) -> str:
 
 # --- one request -----------------------------------------------------------
 
-def get_one(session, limiter: RateLimiter, endpoint: str, tmdb_id: int, key: str) -> FetchResult:
+def get_one(
+    session: requests.Session, limiter: RateLimiter, endpoint: str, tmdb_id: int, key: str
+) -> FetchResult:
     """One network request. Writes the cache file on success; raises on a 401."""
     path = endpoint_path(endpoint, tmdb_id)
     limiter.wait()
@@ -203,6 +213,7 @@ def read_fetch_log() -> dict:
 
 
 def write_fetch_log(log: dict) -> None:
+    """Write the fetch log, one row per film and endpoint, to the file named in config."""
     config.FETCH_LOG.parent.mkdir(parents=True, exist_ok=True)
     rows = [log[k] for k in sorted(log)]
     pd.DataFrame(rows, columns=LOG_COLUMNS).to_csv(
@@ -224,7 +235,7 @@ def _log_row(r: FetchResult) -> dict:
 
 def fetch_all(
     ids: pd.DataFrame,
-    session=None,
+    session: requests.Session | None = None,
     key: str | None = None,
     refresh: bool = False,
     limit: int | None = None,

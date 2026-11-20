@@ -1,5 +1,6 @@
 """Stage 7: write the result tables to out/."""
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -124,7 +125,7 @@ def write_stage1_outputs(
     quarantine: pd.DataFrame,
     reconciliation: pd.DataFrame,
     checks: pd.DataFrame,
-    out_dir=None,
+    out_dir: Path | None = None,
 ) -> None:
     """Write the four stage 1 CSVs to out_dir, default OUT_DIR (UTF-8, no index)."""
     out_dir = out_dir or config.OUT_DIR
@@ -151,7 +152,7 @@ def write_fetch_outputs(
     quarantine: pd.DataFrame,
     reconciliation: pd.DataFrame,
     checks: pd.DataFrame,
-    out_dir=None,
+    out_dir: Path | None = None,
 ) -> None:
     """Rewrite the shared tables with the fetch stage added, and write fetched_ids.csv."""
     out_dir = out_dir or config.OUT_DIR
@@ -204,13 +205,15 @@ def _read(path, dtypes: dict, keep_empty=()) -> pd.DataFrame:
     )
 
 
-def read_films(path) -> pd.DataFrame:
+def read_films(path: str | Path) -> pd.DataFrame:
+    """Read films.csv with explicit types; blank text is missing except in release_date_raw."""
     df = _read(path, FILMS_DTYPES, keep_empty=("release_date_raw",))
     df["release_date"] = pd.to_datetime(df["release_date"], format="%Y-%m-%d", errors="coerce")
     return df
 
 
-def read_talent(path) -> pd.DataFrame:
+def read_talent(path: str | Path) -> pd.DataFrame:
+    """Read talent.csv with explicit types."""
     return _read(path, TALENT_DTYPES)
 
 
@@ -252,7 +255,7 @@ def write_flatten_outputs(
     quarantine: pd.DataFrame,
     reconciliation: pd.DataFrame,
     checks: pd.DataFrame,
-    out_dir=None,
+    out_dir: Path | None = None,
 ) -> None:
     """Write the stage 3 tables and rewrite the shared ones with the flatten stage added."""
     out_dir = out_dir or config.OUT_DIR
@@ -281,7 +284,7 @@ FILMS_CLEAN_DTYPES = {
 }
 
 
-def read_films_clean(path) -> pd.DataFrame:
+def read_films_clean(path: str | Path) -> pd.DataFrame:
     """Read films_clean.csv with explicit types. The exclusion reason keeps "" (usable films)."""
     df = _read(path, FILMS_CLEAN_DTYPES, keep_empty=("release_date_raw", "roi_exclusion_reason"))
     df["release_date"] = pd.to_datetime(df["release_date"], format="%Y-%m-%d", errors="coerce")
@@ -298,7 +301,14 @@ def add_usable_multiple_row(reconciliation: pd.DataFrame, n_usable: int) -> pd.D
     return pd.concat([reconciliation, row], ignore_index=True)
 
 
-def write_clean_outputs(films_clean, review, reconciliation, checks, out_dir=None) -> None:
+def write_clean_outputs(
+    films_clean: pd.DataFrame,
+    review: pd.DataFrame,
+    reconciliation: pd.DataFrame,
+    checks: pd.DataFrame,
+    out_dir: Path | None = None,
+) -> None:
+    """Write the stage 4 tables, and rewrite the shared reconciliation and checks report."""
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     films_clean.to_csv(out_dir / "films_clean.csv", index=False, encoding="utf-8", date_format="%Y-%m-%d")
@@ -307,7 +317,14 @@ def write_clean_outputs(films_clean, review, reconciliation, checks, out_dir=Non
     checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")
 
 
-def write_measure_outputs(kpis, comparison, impact, checks, out_dir=None) -> None:
+def write_measure_outputs(
+    kpis: pd.DataFrame,
+    comparison: pd.DataFrame,
+    impact: pd.DataFrame,
+    checks: pd.DataFrame,
+    out_dir: Path | None = None,
+) -> None:
+    """Write the stage 5 tables, and rewrite the shared checks report."""
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     kpis.to_csv(out_dir / "kpis.csv", index=False, encoding="utf-8")
@@ -316,8 +333,18 @@ def write_measure_outputs(kpis, comparison, impact, checks, out_dir=None) -> Non
     checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")
 
 
-def write_rank_outputs(bundles, entry_positions, middle_summary, signal, shortlist, deal_note, differences,
-                       checks, out_dir=None) -> None:
+def write_rank_outputs(
+    bundles: pd.DataFrame,
+    entry_positions: pd.DataFrame,
+    middle_summary: pd.DataFrame,
+    signal: pd.DataFrame,
+    shortlist: pd.DataFrame,
+    deal_note: pd.DataFrame,
+    differences: pd.DataFrame,
+    checks: pd.DataFrame,
+    out_dir: Path | None = None,
+) -> None:
+    """Write the stage 6 tables, and rewrite the shared checks report."""
     out_dir = out_dir or config.OUT_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
     tables = {

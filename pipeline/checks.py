@@ -1,11 +1,16 @@
-"""Run checks C-01 to C-27 and produce one pass/fail table."""
+"""Run checks C-01 to C-33 and produce one pass/fail table per stage."""
 from datetime import UTC
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 
 from pipeline import config
 from pipeline.errors import PipelineStopError
+
+if TYPE_CHECKING:  # only for the annotations below; importing them here would be circular
+    from pipeline.fetch import FetchRun
+    from pipeline.transform import FlattenRun
 
 STAGE = "load"
 
@@ -96,7 +101,7 @@ def _failure_text(failed: pd.DataFrame) -> str:
     return "; ".join((failed["check_id"].astype(str) + " failed: " + failed["detail"].astype(str)).tolist())
 
 
-def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> None:
+def raise_if_conservation_failed(report: pd.DataFrame, check_ids: tuple[str, ...] = ("C-03",)) -> None:
     """A conservation check failing means rows were lost or invented; stop the run.
 
     C-03 is load, C-03f is fetch and C-03g is flatten. Each is raised from its own stage,
@@ -121,7 +126,7 @@ def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
         raise PipelineStopError(_failure_text(failed), check_id=failed["check_id"].iloc[0])
 
 
-def check_fetch_stage(run) -> pd.DataFrame:
+def check_fetch_stage(run: "FetchRun") -> pd.DataFrame:
     """Checks for stage 2. `run` is a fetch.FetchRun. Same columns as the load checks."""
     results, quarantine, ids = run.results, run.quarantine, run.ids_processed
     stage = "fetch"
@@ -188,7 +193,7 @@ def check_fetch_stage(run) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
 
 
-def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
+def check_flatten_stage(run: "FlattenRun", load_quarantine: pd.DataFrame) -> pd.DataFrame:
     """Checks for stage 3. `run` is a transform.FlattenRun; same columns as the other checks."""
     from pipeline.transform import imdb_crossref  # local import: transform imports fetch
 

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
+import requests
 
 from pipeline import checks, clean, config, extract, fetch, load, metrics, rank, transform, validate
 from pipeline.errors import PipelineStopError
@@ -523,7 +524,7 @@ def _print_outputs_line(out_dir: Path, args, stopped: bool) -> None:
         print(f"Outputs written to {_display_path(out_dir)}/")
 
 
-def main(argv=None, session=None) -> int:
+def main(argv: list[str] | None = None, session: requests.Session | None = None) -> int:
     """Run the pipeline. `session` lets tests pass a fake in place of the network."""
     args = _parse_args(argv)
     try:
