@@ -310,17 +310,18 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
     """
     in_2000 = window == WINDOW_2000
     ref = reference_values(films_clean)
-    median_2000 = ref["list_median_roi_2000_on"]
     if in_2000:
         films = films_clean[films_clean["in_window_2000"].astype(bool)]
         bundles = _bundle_table(films, ref)
-        scope, prefix = " from 2000 onward", "2000 onward: "
+        scope, prefix, label = " from 2000 onward", "2000 onward: ", "2000-onward"
+        median_here = ref["list_median_roi_2000_on"]
     else:
-        window, films, scope, prefix = WINDOW_ALL, films_clean, "", "All years: "
+        window, films, scope, prefix, label = WINDOW_ALL, films_clean, "", "All years: ", "all-years"
+        median_here = ref["list_median_roi"]
 
-    def vs_median(multiple: pd.Series):
-        """In the 2000 window, a clause comparing a multiple with that window's list median."""
-        return "; " + _times(multiple / median_2000) + " the 2000-onward list median" if in_2000 else ""
+    def vs_median(multiple: pd.Series) -> pd.Series:
+        """A clause comparing a multiple with this window's own list median."""
+        return "; " + _times(multiple / median_here) + " the " + label + " list median"
     parts = []
 
     # franchise: rankable bundles, best median multiple first
@@ -332,23 +333,22 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         prefix + "Median " + _times(fr["median_roi"]) + " across " + fr["n_on_list"].astype(str)
         + " films" + scope + " on the list (" + _ordinal(fr["bundle_rank"]) + " of " + str(n_rankable)
     )
+    median_text = f"{median_here:.1f}×"
+    weakest_clause = (
+        " at " + _times(fr["weakest_roi"]) + " (" + _times(fr["weakest_roi"] / median_here) + " that median); "
+    )
+    head = (
+        common + (" bundles rankable from 2000 on; " if in_2000 else " rankable bundles; ")
+        + _times(fr["median_roi"] / median_here) + " the " + label + " list median of " + median_text
+        + "); weakest film" + (" from 2000 onward " if in_2000 else " ") + fr["weakest_title"] + weakest_clause
+    )
     if in_2000:
-        reason = (
-            common + " bundles rankable from 2000 on; " + _times(fr["median_roi"] / median_2000)
-            + " the 2000-onward list median of " + f"{median_2000:.1f}×" + "); weakest film from 2000 onward "
-            + fr["weakest_title"] + " at " + _times(fr["weakest_roi"]) + " ("
-            + _times(fr["weakest_roi"] / median_2000) + " that median); " + _ordinal(fr["vote_rank"])
-            + " by audience votes among them."
-        )
+        reason = head + _ordinal(fr["vote_rank"]) + " by audience votes among them."
     else:
         recent_text = np.where(
             recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
         )
-        reason = (
-            common + " rankable bundles); weakest film " + fr["weakest_title"] + " at "
-            + _times(fr["weakest_roi"]) + "; " + pd.Series(recent_text, index=fr.index) + "; "
-            + _ordinal(fr["vote_rank"]) + " by audience votes."
-        )
+        reason = head + pd.Series(recent_text, index=fr.index) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes."
     parts.append(
         pd.DataFrame(
             {

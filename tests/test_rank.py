@@ -372,14 +372,19 @@ def test_reason_text_carries_the_row_figures():
     sl = rank.build_shortlist(rank.build_bundles(f), f)
     fr = sl[sl["list"] == "franchise"].iloc[0]
     assert fr["reason"] == (
-        "All years: Median 9.0× across 3 films on the list (1st of 4 rankable bundles); weakest film 1-1 at 8.0×; "
-        "9.5× from 2000 onward; 1st by audience votes."
+        "All years: Median 9.0× across 3 films on the list (1st of 4 rankable bundles; "
+        "1.1× the all-years list median of 8.0×); weakest film 1-1 at 8.0× "
+        "(1.0× that median); 9.5× from 2000 onward; 1st by audience votes."
     )
     st = sl[sl["list"] == "standalone"].iloc[2]
-    assert st["reason"] == "All years: 16.0× its budget (3rd of 8 standalones); released 2012; 6th of 8 by audience votes."
+    assert st["reason"] == (
+        "All years: 16.0× its budget (3rd of 8 standalones; 2.0× the all-years list median); "
+        "released 2012; 6th of 8 by audience votes."
+    )
     pick = sl[sl["list"] == "audience pick"].iloc[0]
     assert pick["reason"] == (
-        "All years: Most-voted standalone not in the top five: 8,000 votes (1st of 8) but 6.0× its budget (8th of 8)."
+        "All years: Most-voted standalone not in the top five: 8,000 votes (1st of 8) but 6.0× its budget "
+        "(8th of 8; 0.8× the all-years list median)."
     )
 
 
@@ -655,10 +660,26 @@ def test_2000_standalone_reasons_compare_with_the_2000_onward_median():
     assert "0.3× the 2000-onward list median" in reasons["a"]  # 2 against the median of 6
 
 
-def test_all_years_reasons_do_not_mention_the_2000_onward_median():
-    f = reference_fixture()
+def test_all_years_reasons_compare_with_the_all_years_median():
+    f = reference_fixture()  # list median 5 over all years, 6 from 2000 onward
     sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert sl["reason"].str.contains("the all-years list median").all()
     assert not sl["reason"].str.contains("2000-onward list median").any()
+    reasons = dict(zip(sl["name"], sl["reason"]))
+    assert reasons["c"] == ("All years: 6.0× its budget (1st of 3 standalones; 1.2× the all-years list "
+                            "median); released 1990; 1st of 3 by audience votes.")
+    assert "0.8× the all-years list median" in reasons["b"]  # 4 against 5
+    assert "0.4× the all-years list median" in reasons["a"]  # 2 against 5
+    assert "1.6× the all-years list median of 5.0×" in reasons["Collection 1"]  # 8 against 5
+    assert "(0.8× that median)" in reasons["Collection 1"]  # weakest film 4 against 5
+
+
+def test_each_window_uses_its_own_median_for_the_same_film():
+    f = reference_fixture()
+    both = rank.build_shortlists(rank.build_bundles(f), f)
+    b = both[both["name"] == "b"].set_index("window")["reason"]
+    assert "0.8× the all-years list median" in b["all years"]  # 4 against 5
+    assert "0.7× the 2000-onward list median" in b["2000 onward"]  # the same 4 against 6
 
 
 def test_2000_franchise_reason_compares_the_median_and_the_weakest_film():
