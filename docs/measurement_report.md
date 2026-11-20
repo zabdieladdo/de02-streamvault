@@ -22,6 +22,7 @@ The brief sets no numeric target (confirmed 19 Nov). The fetch is timed separate
 | Flatten and join stage, warm | 1 (20 Nov, 04:24 UTC) | 0.39 s | n/a | 0.39 s | Part of the analysis stage; full measurement in a later step |
 | Clean stage, warm | 3 (20 Nov, 07:11 to 07:35 UTC) | 0.022 s | n/a | 0.027 s | Part of the analysis stage |
 | Measure stage, warm | 3 (20 Nov, 07:11 to 07:35 UTC) | 0.225 s | n/a | 0.249 s | Part of the analysis stage |
+| Rank stage, warm | 5 (20 Nov, 08:50 to 09:07 UTC) | 0.144 s | n/a | 0.327 s | Part of the analysis stage |
 
 - The cold fetch made 227 requests, not 229, because id 155 was already saved from the `--limit 1` run just before it.
 - Every request was answered on the first attempt: no retries and no 429 in 229 requests.
@@ -40,3 +41,4 @@ Not yet measured; added when the analysis stage is built.
 - The cached runs measure reading saved files and writing the log; they say nothing about how long the analysis stage will take.
 - The first flatten run on 20 Nov (04:17 UTC) took 8.85 s, recorded as `seconds.flatten` in `out/run_log.jsonl`. Five later full runs took 0.39 to 0.64 s. The cause was not measured; a cold first read of newly written files is the likely one. Cold-start timing is measured in the measurement step with a stated method.
 - The same pattern appeared again at 07:11 UTC: the first full run after the one at 04:24 UTC took 5.54 s in the flatten stage, and the two runs after it 0.34 s each (`seconds.flatten` in `out/run_log.jsonl`). The clean and measure figures above come from those same three runs. Cause still not measured.
+- The rank stage figures use the 5 runs made after the stage began computing both windows (`seconds.rank` in `out/run_log.jsonl`, entries that record the 2000-onward list median). Nine earlier runs of older versions of the rank stage (before it computed the 2000-onward reference medians) took 0.09 to 0.17 s and are not counted. The slowest of the five, 0.327 s, was the run made with Python warnings turned into errors; the other four took 0.130 to 0.164 s. The cause of the difference was not isolated.
