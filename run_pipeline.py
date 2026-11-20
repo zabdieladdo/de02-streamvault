@@ -144,6 +144,7 @@ def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> di
         {
             "fetch_network_calls": run.network_calls,
             "fetch_cached": n_cached,
+            "snapshot_build_s": round(run.extra.get("snapshot_build_s", 0.0), 4),
             "fetch_by_outcome": by_outcome,
             "fetch_quarantined_by_reason": {c: by_reason[c] for c in ordered},
             "requests_per_second_achieved": round(rate, 2) if rate else None,
@@ -236,6 +237,11 @@ def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> No
         }
     )
     record["seconds"]["flatten"] = round(seconds, 4)
+    snapshots = run.snapshots
+    record["snapshot_rebuilt"] = bool(snapshots and snapshots.rebuilt)
+    if record["snapshot_rebuilt"]:
+        record["snapshot_rebuild_reason"] = snapshots.reason
+        record["snapshot_build_s"] = round(record.get("snapshot_build_s", 0.0) + snapshots.seconds, 4)
 
     print()
     print("Stage 3: flatten and join")
@@ -254,6 +260,8 @@ def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> No
           f"{int(joins['left_only'].sum())} unmatched")
     print(f"  imdb check   {report3.loc[report3['check_id'] == 'I-01', 'detail'].iloc[0]}")
     print(f"  checks       {n_passed} passed, {n_failed} failed")
+    if record["snapshot_rebuilt"]:
+        print(f"  SNAPSHOT REBUILT: {snapshots.reason} ({snapshots.seconds:.2f} s)")
     print(f"  time         {seconds:.2f} s")
     checks.raise_if_conservation_failed(report3, ("C-03g",))  # after the outputs are on disk
     return {"films": films, "talent": talent, "quarantine": quarantine,
@@ -506,9 +514,11 @@ def _clear_old_outputs(out_dir: Path) -> None:
             path.unlink(missing_ok=True)
 
 
-def _write_status(out_dir: Path, stopped_at: str | None, stage: int) -> None:
+def _write_status(out_dir: Path, stopped_at: str | None, stage: int, rebuilt: str = "") -> None:
     now = datetime.now(UTC).isoformat(timespec="seconds")
     text = "complete " + now if stopped_at is None else f"stopped at {stopped_at}, stage {stage}, {now}"
+    if rebuilt:
+        text += f" (snapshot rebuilt: {rebuilt})"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / STATUS_FILE).write_text(text + chr(10), encoding="utf-8")
 
@@ -558,7 +568,7 @@ def main(argv: list[str] | None = None, session: requests.Session | None = None)
     _print_outputs_line(out_dir, args, stopped=code == 1)
     if "input_sha256" in record:  # stage 1 got far enough to log
         load.append_run_log(record)
-    _write_status(out_dir, stopped_at, stage)
+    _write_status(out_dir, stopped_at, stage, record.get("snapshot_rebuild_reason", ""))
     return code
 
 

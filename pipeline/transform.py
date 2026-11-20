@@ -1,5 +1,6 @@
 """Stages 3-5: flatten JSON, join films to credits with validate=, and set per-metric flags."""
 import json
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -28,19 +29,58 @@ QUARANTINE_COLUMNS = ["line_number", "raw_value", "reason_code", "reason_detail"
 
 # --- reading saved responses (a loop over files, like the fetch) --------------------
 
-def read_saved_responses(
-    fetched_ids: pd.DataFrame, run_at: str | None = None
-) -> tuple[list[dict], list[dict], pd.DataFrame]:
-    """Read details and credits for each fetched id.
+@dataclass
+class SnapshotUse:
+    """What happened to the snapshots before flatten: whether they were rebuilt, why, and how long it took."""
 
-    Returns (details_list, credits_list, flatten_quarantine). A film whose file is missing,
-    not valid JSON, or for another id goes to quarantine and is in neither list.
+    held: dict  # endpoint -> {film id: (fetched_at, response)}
+    rebuilt: bool = False
+    reason: str = ""
+    seconds: float = 0.0
+
+
+def prepare_snapshots(now: datetime | None = None) -> SnapshotUse:
+    """Read the two snapshots, checking each against the fetch log first.
+
+    A snapshot whose ids and fetched_at values do not match the log's ok rows (or that is missing or
+    unreadable) is rebuilt from the per-film files, and the rebuild is reported. A rebuild that cannot
+    be written stops the run (C-34).
+    """
+    log = fetch.read_fetch_log()
+    held, problems = {}, []
+    for endpoint in fetch.SNAPSHOT_NAMES:
+        held[endpoint] = fetch.read_snapshot(endpoint)
+        problem = fetch.snapshot_problem(endpoint, held[endpoint], log, now)
+        if problem:
+            problems.append(problem)
+    if not problems:
+        return SnapshotUse({e: h or {} for e, h in held.items()})
+    started = time.perf_counter()
+    try:
+        held = {e: fetch.build_snapshot(e, log, now) for e in fetch.SNAPSHOT_NAMES}
+    except OSError as exc:
+        raise PipelineStopError(f"Could not rebuild the response snapshots: {exc}", check_id="C-34") from exc
+    return SnapshotUse(held, True, "; ".join(problems), time.perf_counter() - started)
+
+
+def read_saved_responses(
+    fetched_ids: pd.DataFrame, run_at: str | None = None, snapshots: SnapshotUse | None = None
+) -> tuple[list[dict], list[dict], pd.DataFrame]:
+    """Read details and credits for each fetched id, from the snapshots where they hold the film.
+
+    Returns (details_list, credits_list, flatten_quarantine). A film the snapshot does not hold is read from
+    its own files; one whose file is missing, not valid JSON, or for another id goes to quarantine and is in
+    neither list.
     """
     run_at = run_at or datetime.now(UTC).isoformat(timespec="seconds")
+    snapshots = snapshots or prepare_snapshots()
     ids = fetched_ids.sort_values("first_line_number")
     details_list, credits_list, bad = [], [], []
 
     def load(endpoint: str, tmdb_id: int):
+        entry = snapshots.held.get(endpoint, {}).get(tmdb_id)
+        if entry is not None:
+            return entry[1], None
         path = fetch.cache_file(endpoint, tmdb_id)
         if not path.is_file():
             return None, f"{endpoint} file missing"
@@ -294,11 +334,13 @@ class FlattenRun:
     quarantine: pd.DataFrame
     fetched_ids: pd.DataFrame  # the ids given to this stage
     credits_ids: list
+    snapshots: SnapshotUse | None = None  # whether the snapshots were rebuilt before this stage
 
 
 def flatten_stage(fetched_ids: pd.DataFrame, run_at: str | None = None) -> FlattenRun:
     """Stage 3 end to end, from saved responses to the analysis tables."""
-    details_list, credits_list, quarantine = read_saved_responses(fetched_ids, run_at)
+    snapshots = prepare_snapshots()
+    details_list, credits_list, quarantine = read_saved_responses(fetched_ids, run_at, snapshots)
     readable = fetched_ids[~fetched_ids["tmdb_id"].astype(str).isin(quarantine["raw_value"])]
     films = flatten_details(details_list)
     credit_counts, talent = flatten_credits(credits_list)
@@ -307,7 +349,7 @@ def flatten_stage(fetched_ids: pd.DataFrame, run_at: str | None = None) -> Flatt
     )
     return FlattenRun(
         films_out, talent_out, join_report, quarantine, fetched_ids,
-        credits_ids=credit_counts["tmdb_id"].tolist(),
+        credits_ids=credit_counts["tmdb_id"].tolist(), snapshots=snapshots,
     )
 
 
