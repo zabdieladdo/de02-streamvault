@@ -1,4 +1,5 @@
 """Shared fixtures: a helper that writes small id-list CSV files to tmp_path."""
+import pandas as pd
 import pytest
 
 
@@ -92,3 +93,36 @@ def fetch_env(tmp_path, monkeypatch, no_sleep):
     monkeypatch.setattr(config, "DOTENV_PATH", tmp_path / "no.env")
     monkeypatch.setenv("TMDB_API_KEY", TEST_KEY)
     return SimpleNamespace(raw=raw, key=TEST_KEY, tmp_path=tmp_path)
+
+
+def make_films(rows: list[dict]) -> pd.DataFrame:
+    """A films table (stage 3 shape, the columns stages 4 and 5 read) from short hand-written rows.
+
+    Each row may give: title, year, status, budget, revenue, votes, franchise (bool or a
+    collection id). Anything not given gets a plain default.
+    """
+    records = []
+    for i, r in enumerate(rows, start=1):
+        franchise = r.get("franchise", False)
+        records.append(
+            {
+                "tmdb_id": r.get("tmdb_id", i),
+                "first_line_number": i + 1,
+                "title": r.get("title", f"Film {i}"),
+                "release_year": r.get("year", 2010),
+                "status": r.get("status", "Released"),
+                "budget": r.get("budget", 1_000_000),
+                "revenue": r.get("revenue", 2_000_000),
+                "vote_count": r.get("votes", 1000),
+                "is_franchise": bool(franchise),
+                "collection_id": (franchise if franchise is not True else 100 + i) if franchise else pd.NA,
+                "adult": False,
+                "video": False,
+            }
+        )
+    df = pd.DataFrame(records)
+    for col in ("release_year", "budget", "revenue", "vote_count", "collection_id"):
+        df[col] = df[col].astype("Int64")
+    df["title"] = df["title"].astype("string")
+    df["status"] = df["status"].astype("string")
+    return df

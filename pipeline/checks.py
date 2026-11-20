@@ -1,4 +1,5 @@
 """Run checks C-01 to C-27 and produce one pass/fail table."""
+import numpy as np
 import pandas as pd
 
 from pipeline import config
@@ -232,3 +233,60 @@ def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
     add("I-01", "IMDb id cross-reference (information)", True, text)
 
     return pd.DataFrame(rows, columns=["check_id", "description", "stage", "passed", "detail"])
+
+
+def check_clean_stage(films_clean: pd.DataFrame, as_of_year: int | None = None) -> pd.DataFrame:
+    """Checks C-15 to C-20 and C-ROI for stage 4; same columns as the other checks."""
+    from datetime import datetime, timezone
+
+    f = films_clean
+    year_limit = as_of_year or datetime.now(timezone.utc).year
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "clean",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    def names(mask, n=8):
+        titles = f.loc[mask, "title"].astype("string").fillna("(no title)").tolist()
+        return ", ".join(titles[:n]) + (f" and {len(titles) - n} more" if len(titles) > n else "")
+
+    n_neg = int(((f["budget"] < 0) | (f["revenue"] < 0)).sum())
+    add("C-15", "No negative budget or revenue", n_neg == 0, f"{n_neg} films with a negative value")
+
+    year = f["release_year"]
+    n_missing = int(year.isna().sum())
+    n_out = int(((year < 1900) | (year > year_limit)).sum())
+    add("C-16", f"Release year between 1900 and {year_limit}", n_out == 0,
+        f"{n_out} outside the range; {n_missing} with no year")
+
+    n_units, n_micro = int(f["units_error_likely"].sum()), int(f["possible_micro_budget"].sum())
+    add("C-17", "Suspect money values counted (review, not a failure)", True,
+        f"{n_units} likely units errors; {n_micro} possible micro-budget films")
+
+    ext = f["roi_extreme"].astype(bool)
+    add("C-18", "Extreme multiples counted (listed, never removed)", True,
+        f"{int(ext.sum())} extreme multiples" + (f": {names(ext)}" if ext.any() else ""))
+
+    n_unreleased = int((~f["is_released"]).sum())
+    n_video = int(f["video"].fillna(False).astype(bool).sum())
+    n_adult = int(f["adult"].fillna(False).astype(bool).sum())
+    add("C-19", "Unreleased, video and adult films counted", True,
+        f"{n_unreleased} not released; {n_video} video; {n_adult} adult")
+
+    n_groups = int(f.loc[f["possible_same_film"], "title_year_key"].nunique())
+    n_seq = int(f["sequel_like_title"].sum())
+    add("C-20", "Possible repeats and sequel-like standalones counted", True,
+        f"{n_groups} possible same-film groups; {n_seq} sequel-like standalones")
+
+    roi = f["roi"]
+    mismatch = int((roi.isna() == f["roi_usable"]).sum())
+    n_inf = int(np.isinf(roi.dropna()).sum())
+    add("C-ROI", "roi is missing exactly where it is not usable", mismatch == 0 and n_inf == 0,
+        f"{mismatch} rows disagree with roi_usable; {n_inf} infinite values")
+
+    return pd.DataFrame(rows)
