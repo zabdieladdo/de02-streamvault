@@ -59,6 +59,10 @@ class FakeSession:
     def __init__(self, script=None):
         self.script = dict(script or {})
         self.calls = []
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def get(self, url, params=None, timeout=None):
         path = url.removeprefix(config.API_BASE)

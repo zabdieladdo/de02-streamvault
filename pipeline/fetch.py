@@ -244,7 +244,7 @@ def fetch_all(
     limiter = RateLimiter(config.REQUESTS_PER_SECOND)
     state = {
         "session": session, "network_calls": 0, "network_seconds": 0.0,
-        "consecutive": 0, "first_network": True, "preflight_ok": True,
+        "consecutive": 0, "first_network": True, "preflight_ok": True, "opened_here": False,
     }
     rows: list[dict] = []
 
@@ -300,6 +300,7 @@ def fetch_all(
             )
         if state["session"] is None:
             state["session"] = build_session()
+            state["opened_here"] = True  # a session passed in by the caller is theirs to close
 
         started = time.perf_counter()
         try:
@@ -353,6 +354,8 @@ def fetch_all(
             add(credits_, src)
     finally:
         write_fetch_log(log)  # also on the stop path, so completed requests are kept
+        if state["opened_here"]:
+            state["session"].close()  # release the connections this stage opened
 
     results = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     for col in ("status_code", "attempts"):
