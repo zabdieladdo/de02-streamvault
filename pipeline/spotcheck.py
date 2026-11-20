@@ -3,8 +3,16 @@
 Nothing here writes to data/raw/ or the fetch log: the saved snapshot is what is being checked,
 so the check must not change it.
 """
-import pandas as pd
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
+import pandas as pd
+import requests
+
+from pipeline import config, fetch
+from pipeline.errors import PipelineStopError
+from pipeline.redact import redact
 from pipeline.transform import imdb_crossref
 
 SLICES = (
@@ -104,3 +112,98 @@ def films_to_check(selection: pd.DataFrame) -> pd.DataFrame:
         title=("title", "first"), slices=("slice", "|".join), stand_in=("stand_in", "any"),
     )
     return grouped.assign(first=first).sort_values("first").drop(columns="first").reset_index()
+
+
+# --- live fetch: read-only ------------------------------------------------------------
+
+ENDPOINTS = ("details", "credits")
+
+
+@dataclass
+class LiveResult:
+    """One live answer for a film and an endpoint. Kept in memory and in out/; never in data/raw/."""
+
+    tmdb_id: int
+    endpoint: str
+    outcome: str
+    status_code: int | None
+    attempts: int | None
+    elapsed_s: float
+    fetched_at: str
+    detail: str = ""
+    body: dict | None = None
+
+
+def fetch_one_live(
+    session: requests.Session, limiter: fetch.RateLimiter, endpoint: str, tmdb_id: int, key: str
+) -> LiveResult:
+    """One live request, with the fetch stage's timeout and retries. Writes nothing; raises on a 401.
+
+    This is deliberately not fetch.get_one, which saves the response into data/raw/: the snapshot is
+    what is being checked, so the check must not be able to change it.
+    """
+    path = fetch.endpoint_path(endpoint, tmdb_id)
+    limiter.wait()
+    started = time.perf_counter()
+    fetched_at = datetime.now(UTC).isoformat(timespec="seconds")
+
+    def result(outcome, status=None, attempts=None, detail="", body=None):
+        return LiveResult(
+            tmdb_id, endpoint, outcome, status, attempts, round(time.perf_counter() - started, 3),
+            fetched_at, redact(detail, key), body,
+        )
+
+    try:
+        response = session.get(config.API_BASE + path, params={"api_key": key}, timeout=config.TIMEOUT)
+    except requests.RequestException as exc:
+        return result("network_error", detail=f"{type(exc).__name__}: {exc}")
+
+    history = getattr(getattr(getattr(response, "raw", None), "retries", None), "history", None)
+    attempts = 1 + (len(history) if history else 0)
+    status = response.status_code
+    if status == 401:
+        raise PipelineStopError("API key rejected (401). Check TMDB_API_KEY; nothing further requested.")
+    if status == 404:
+        return result("not_found", status, attempts, fetch._message(response))
+    if status != 200:
+        return result("failed", status, attempts, f"HTTP {status} {fetch._message(response)}".strip())
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict):
+        return result("bad_response", status, attempts, "Response was not valid JSON")
+    if body.get("id") != tmdb_id:
+        return result("id_mismatch", status, attempts, f"Response id {body.get('id')!r} does not match")
+    return result("ok", status, attempts, "", body)
+
+
+def fetch_live(
+    tmdb_ids: list[int], session: requests.Session | None = None, key: str | None = None
+) -> list[LiveResult]:
+    """Details and credits for each film, live. A loop over the films: each needs its own requests.
+
+    A session passed in is left open; one opened here is closed. Nothing is written to disk.
+    """
+    if not key:
+        raise PipelineStopError("TMDB_API_KEY not set. Copy .env.example to .env and add your own key.")
+    opened = session is None
+    session = fetch.build_session() if opened else session
+    limiter = fetch.RateLimiter(config.REQUESTS_PER_SECOND)
+    results: list[LiveResult] = []
+    consecutive = 0
+    try:
+        for tmdb_id in tmdb_ids:
+            for endpoint in ENDPOINTS:
+                res = fetch_one_live(session, limiter, endpoint, int(tmdb_id), key)
+                results.append(res)
+                consecutive = consecutive + 1 if res.outcome == "network_error" else 0
+                if consecutive >= config.STOP_AFTER_CONSECUTIVE_NETWORK_ERRORS:
+                    raise PipelineStopError(
+                        f"{consecutive} network errors in a row; the network appears to be down. "
+                        "Nothing was written."
+                    )
+    finally:
+        if opened:
+            session.close()
+    return results
