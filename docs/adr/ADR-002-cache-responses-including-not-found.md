@@ -1,4 +1,4 @@
-# ADR-008: Save every response and reuse it for 180 days, including "not found"
+# ADR-002: Save every response and reuse it for 180 days, including "not found"
 
 - **Status:** Accepted
 - **Date:** 2026-11-20

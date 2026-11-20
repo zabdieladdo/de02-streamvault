@@ -66,10 +66,10 @@ def get_api_key() -> str:
 LEAD_ACTOR_COUNT = 3  # the three lowest `order` values in a film's cast
 
 # --- Stages 4 and 5: clean, flag, measure -----------------------------------
-SMALL_MONEY_THRESHOLD = 10_000  # D12: a budget or revenue from 1 to this is suspect
+SMALL_MONEY_THRESHOLD = 10_000  # S24: a budget or revenue from 1 to this is suspect
 UNITS_ERROR_VOTE_THRESHOLD = 500  # S24: at or above this many votes, suspect money is a likely units error
-ROI_HIGH_REVIEW = 50  # D13: multiples above this are listed, never removed
-ROI_LOW_REVIEW = 0.05  # D13
+ROI_HIGH_REVIEW = 50  # multiples above this are listed in the review list, never removed (findings: Looked wrong)
+ROI_LOW_REVIEW = 0.05  # same rule for multiples below this
 WINDOW_START_YEAR = 2000
 MIN_GROUP_FOR_CONCLUSION = 5  # S14
 MIN_BUNDLE_FOR_RANKING = 3  # S14

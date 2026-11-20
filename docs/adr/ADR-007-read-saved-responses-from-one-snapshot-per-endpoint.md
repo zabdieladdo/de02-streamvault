@@ -1,13 +1,13 @@
 # ADR-007: Read saved responses from one snapshot per endpoint
 
-- **Status:** Proposed (assistant draft)
+- **Status:** Accepted
 - **Date:** 2026-11-20
 - **Decision owner:** Zabdiel
 
 ## Context
 
 The target is a full cached run under 10 s wall time at 500 titles (S05). The first measurement gave 15.6 s cold (one run), so the target was not met (`docs/measurement_report.md`, Results 1). The flatten stage took 13.2 s cold against 1.5 s warm, and no other stage changed between cold and warm. It opens about 1,000 newly written files, one details and one credits file per film, and reading them for the first time is slow. 
-The per-film files are the saved responses ADR-008 describes, one file per film and endpoint with a 180-day life. The spec for this step said not to optimise in the measurement branch and left the fix to a separate decision.
+The per-film files are the saved responses ADR-002 describes, one file per film and endpoint with a 180-day life. The spec for this step said not to optimise in the measurement branch and left the fix to a separate decision.
 
 ## Decision
 
@@ -25,7 +25,7 @@ Keep the per-film files in `data/raw/` as the source of truth. At the end of the
 
 - **How it would work:** Store only one combined file per endpoint and drop the per-film files.
 - **Why it is attractive:** One copy of the data, no rebuild path.
-- **Why rejected:** It changes ADR-008 and the fetch cache (each new film would rewrite a large file), and the spot-check and the fetch log are built around per-film files. The extra copy is the price of leaving those alone.
+- **Why rejected:** It changes ADR-002 and the fetch cache (each new film would rewrite a large file), and the spot-check and the fetch log are built around per-film files. The extra copy is the price of leaving those alone.
 
 ### Alternative C: read the per-film files in parallel
 

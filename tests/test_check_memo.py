@@ -223,6 +223,5 @@ REAL_MEMO = Path(config.REPO_ROOT) / "docs" / "client_memo.md"
 
 
 @pytest.mark.skipif(not (REAL_OUT / "kpis.csv").is_file(), reason="needs a full run's outputs in out/")
-@pytest.mark.xfail(strict=True, reason="the draft is over 550 words and quotes 104, which the outputs do not hold")
 def test_the_real_memo_passes():
     assert check_memo.check(REAL_MEMO, REAL_OUT) == []

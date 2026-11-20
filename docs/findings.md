@@ -4,6 +4,21 @@
 
 127 rows were received. 10 left at load (blank, placeholder, negative, IMDb id, six repeats), 5 at the fetch (not on TMDb), leaving 112 films in the analysis table, one row per film, as of the 20 Nov 2026 snapshot. TMDb's data for these 112 is complete: no zero budgets or revenues, no missing release dates, no unreleased films, every film with a director and three billed actors. The faults in this lab are in the candidate list, not in the data returned for it. The largest risk to the recommendation is the list's shape: 96 franchise films against 16 standalones (F-06). Every decision the analysis made was rerun with and without it: none changes which group leads, in either window.
 
+**Each decision rerun with and without it** (from `out/decision_impact.csv`; the gap is the franchise median multiple minus the standalone median multiple):
+
+| Decision | Rerun as | Films affected, all years / 2000 onward | Gap, all years / 2000 onward | Leader changes? |
+|---|---|---|---|---|
+| As decided (baseline) | | 0 / 0 | 1.78 / 1.21 | No |
+| Repeats removed (F-01) | Repeats kept | 7 / 2 | 2.39 / 1.23 | No |
+| Not-found ids excluded (ADR-002) | No data to include | 5 / 5 | 1.78 / 1.21 | No |
+| Zero money means not reported (S03, S04) | Zeros treated as real | 0 / 0 | 1.78 / 1.21 | No |
+| Unreleased films excluded (S20) | Included | 0 / 0 | 1.78 / 1.21 | No |
+| Likely units errors excluded (S24) | Included | 0 / 0 | 1.78 / 1.21 | No |
+| Outlier kept (F-08) | Top film removed per group | 2 / 2 | 2.29 / 1.79 | No |
+| Minimum group size (S14) | None, 3 or 5 films | 0 / 0 | 1.78 / 1.21 | No |
+
+The seven extra copies are the six repeated ids and the IMDb-id row, a third copy of The Dark Knight (F-03). Only The Dark Knight (2008) falls in the 2000-onward window, so two of the copies do.
+
 ## Reconciliation
 
 | Stage | Rows | Delta | Reason |
@@ -65,7 +80,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **How I detected it:** median beside mean on every row; leave-one-out.
 - **Scale:** one film, The Good, the Bad and the Ugly (1966, 32.4×), lifts the standalone mean; removing it moves the standalone median from 3.84 to 3.24.
 - **Effect on the client's number:** anyone comparing averages would conclude the two groups perform alike.
-- **What I did about it:** the median is the headline (ADR-006).
+- **What I did about it:** the median is the headline (ADR-005).
 - **Residual risk:** none for the direction of the result; the size of the gap depends on the measure chosen.
 
 ### F-10: Every film after the first earns less, not only middle entries — Severity: Medium
@@ -81,6 +96,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 
 - **What it is:** 3 people are consistently above on return (Spielberg, Ford, Neeson); Ford and Neeson are at exactly 2 of 3. Bale and Caine are below mostly through Nolan's films (Bale in 4 of his 5 films on the list, Caine in all 3).
 - **How I detected it:** talent signal over independent titles.
+- **Scale:** 7 people have three or more independent titles and so show a signal: 3 consistently above on return (Steven Spielberg 4 of 4 titles, Harrison Ford 2 of 3, Liam Neeson 2 of 3) and 4 consistently below (Christopher Nolan 0 of 5, Al Pacino 1 of 3, Christian Bale 0 of 3, Michael Caine 0 of 3). Everyone else has too little evidence.
 - **Effect on the client's number:** names cannot carry a licensing decision on their own.
 - **What I did about it:** labels name the measure; the vote hit rate is shown beside it.
 - **Residual risk:** return and audience interest disagree for the most-watched director on the list.
@@ -153,6 +169,12 @@ The eight pre-2000 standalones split into four below 2.7× (Shawshank, Fight Clu
 
 ## Could not verify
 
-- Which of the three sources each row came from: the file has no source column, so repeats and bad values cannot be traced to the source that produced them. The clustering above suggests, but does not show, one source.
-- What the five not-found ids refer to: TMDb has no record of them, so we cannot tell whether they are films, and if so which.
-- How many films each studio's bundle actually contains. Bundles are valued on the films on the list (8 of the 22 rankable bundles straddle 2000).
+Each line says what is missing, who holds it, why the client cannot supply it and what it costs Kwame. The questions are in `docs/questions.md`.
+
+- Which of the three sources each row came from (Q1). Held by Adjoa (the tracker), the predecessor's spreadsheet and the studio desk; the list was merged without source labels. Cost: the cause of the faults cannot be traced. The clustering above suggests, but does not show, one source.
+- What the five not-found ids refer to (Q4). Held by the studio licensing desk; they look like another system's catalogue numbers, which TMDb cannot translate. Cost: a strong film among them may be missing from the shortlist.
+- The full contents of each studio bundle (Q5). Held by the studio; the list shows only the films chosen, so bundles are valued on the films on the list (8 of the 22 rankable bundles straddle 2000). Cost: a bundle with weak extra films is overvalued.
+- Licence prices (Q6). Held by the studio, in negotiation; the brief gives none. Cost: the deal note gives a price relative to the list, not a figure.
+- Viewing figures for the licensed films (Q7). Held by StreamVault's own viewing data; not in any source given. Cost: box office stands in for audience value (S01), the biggest open risk.
+- A view of pre-2000 figures that Finance accepts (Q8). Held by Finance (Yaw); not stated. Cost: the all-years picks stay unsupported.
+- Whether the film data may be used commercially (Q9). Held by StreamVault's legal contact, with the data provider; a legal question outside this analysis. Cost: the figures could be unusable until confirmed.
