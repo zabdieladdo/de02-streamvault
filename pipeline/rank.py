@@ -179,7 +179,12 @@ def middle_entry_test(films_clean: pd.DataFrame, bundles: pd.DataFrame) -> tuple
         ("note", np.nan, OPENER_BIAS_NOTE),
     ]
     summary = pd.DataFrame(rows, columns=["measure", "value", "note"])
-    return ep, summary
+    # the film count behind each pooled median, so a reader sees how many films each one rests on
+    counts = ep["position"].value_counts()
+    is_pooled = summary["measure"].str.startswith("pooled median multiple: ")
+    position = summary["measure"].str.rsplit(": ", n=1).str[-1]
+    summary["n_films"] = position.map(counts).fillna(0).where(is_pooled).astype("Int64")
+    return ep, summary[["measure", "value", "n_films", "note"]]
 
 
 # Every label names its measure: the return, meaning revenue divided by budget. The vote-count hit

@@ -707,3 +707,26 @@ def test_every_deal_row_carries_both_sets_of_ratios():
 
 def test_talent_signal_says_it_is_an_all_years_measure():
     assert "all-years measure" in rank.talent_signal.__doc__
+
+
+def test_each_pooled_median_shows_its_film_count():
+    x = [{"tmdb_id": 1, "title": "x-open", "franchise": 1, "date": "2000-01-01", **money(4)}]
+    x += [{"tmdb_id": 2 + i, "title": f"x-mid{i}", "franchise": 1, "date": f"200{1 + i}-01-01", **money(2)} for i in range(5)]
+    x += [{"tmdb_id": 8, "title": "x-last", "franchise": 1, "date": "2010-01-01", **money(4)}]
+    y = [{"tmdb_id": 11, "title": "y-open", "franchise": 2, "date": "2000-01-01", **money(2)},
+         {"tmdb_id": 12, "title": "y-mid", "franchise": 2, "date": "2003-01-01", **money(4)},
+         {"tmdb_id": 13, "title": "y-last", "franchise": 2, "date": "2010-01-01", **money(2)}]
+    _, summary = entries_for(x + y)
+    assert list(summary.columns) == ["measure", "value", "n_films", "note"]
+    s = summary.set_index("measure")["n_films"]
+    assert s["pooled median multiple: opener"] == 2  # one per bundle
+    assert s["pooled median multiple: middle"] == 6  # 5 + 1
+    assert s["pooled median multiple: latest"] == 2
+    assert s.drop(["pooled median multiple: opener", "pooled median multiple: middle",
+                   "pooled median multiple: latest"]).isna().all()  # only the pooled rows carry a film count
+
+
+def test_pooled_film_counts_are_zero_when_nothing_was_tested():
+    _, summary = entries_for(bundle_rows(1, [2, 3]))
+    s = summary.set_index("measure")["n_films"]
+    assert s["pooled median multiple: opener"] == 0 and s["pooled median multiple: middle"] == 0
