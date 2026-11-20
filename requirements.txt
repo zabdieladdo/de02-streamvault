@@ -1,7 +1,4 @@
-# StreamVault pipeline dependencies. Install with: pip install -r requirements.txt
-# Supported Python: 3.11 to 3.15. Tested on 3.11, 3.13 and 3.15.
-# NumPy 2.5 dropped Python 3.11 and NumPy 2.4 has no build for 3.15,
-# so the NumPy pin depends on the Python version.
+# NumPy pin depends on Python version: 2.5 dropped 3.11, 2.4 has no 3.15 build
 pandas==3.1.1
 numpy==2.4.6; python_version < "3.12"
 numpy==2.5.5; python_version >= "3.12"
