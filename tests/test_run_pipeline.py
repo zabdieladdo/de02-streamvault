@@ -308,3 +308,32 @@ def test_failing_c18_does_not_stop_the_run(env, capsys, monkeypatch):
     assert not report.loc["C-18", "passed"]  # recorded
     assert (out / "kpis.csv").is_file()  # stage 5 still ran
     assert "STOPPED" not in capsys.readouterr().out
+
+
+# --- conservation through fetch and flatten stops the run ----------------------------
+
+def test_c03f_failure_stops_the_run(env, capsys, monkeypatch):
+    real = run_pipeline.fetch.fetch_all
+
+    def losing_rows(*args, **kwargs):
+        run = real(*args, **kwargs)
+        extra = run.quarantine.iloc[[0, 0, 0]]  # more quarantined rows than ids processed
+        run.quarantine = pd.concat([run.quarantine, extra], ignore_index=True)
+        return run
+
+    monkeypatch.setattr(run_pipeline.fetch, "fetch_all", losing_rows)
+    _stops_on(env, capsys, "C-03f", ("fetched_ids.csv", "quarantine.csv", "reconciliation.csv"))
+    assert not (env.tmp_path / "out" / "films.csv").exists()  # flatten never ran
+
+
+def test_c03g_failure_stops_the_run(env, capsys, monkeypatch):
+    real = run_pipeline.transform.flatten_stage
+
+    def losing_a_film(*args, **kwargs):
+        run = real(*args, **kwargs)
+        run.films = run.films.iloc[1:]  # a film vanishes after the join
+        return run
+
+    monkeypatch.setattr(run_pipeline.transform, "flatten_stage", losing_a_film)
+    _stops_on(env, capsys, "C-03g", ("films.csv", "talent.csv", "quarantine.csv", "reconciliation.csv"))
+    assert not (env.tmp_path / "out" / "films_clean.csv").exists()  # stage 4 never ran

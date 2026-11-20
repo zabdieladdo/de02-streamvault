@@ -180,6 +180,7 @@ def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> di
         print(f"  ANALYSIS INCOMPLETE: {row}")
     print(f"  time         {seconds:.1f} s")
     print(f"Outputs written to {_display_path(out_dir)}/")
+    checks.raise_if_conservation_failed(report2, ("C-03f",))  # after the outputs are on disk
     return {"run": run, "fetched_ids": fetched_ids, "quarantine": quarantine, "report": report}
 
 
@@ -253,6 +254,7 @@ def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> No
     print(f"  imdb check   {report3.loc[report3['check_id'] == 'I-01', 'detail'].iloc[0]}")
     print(f"  checks       {n_passed} passed, {n_failed} failed")
     print(f"  time         {seconds:.2f} s")
+    checks.raise_if_conservation_failed(report3, ("C-03g",))  # after the outputs are on disk
     return {"films": films, "quarantine": quarantine, "reconciliation": reconciliation, "report": report}
 
 
