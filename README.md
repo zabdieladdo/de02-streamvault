@@ -26,8 +26,14 @@ python setup_check.py
 ## Run
 
 ```powershell
-python run_pipeline.py
+python run_pipeline.py              # normal run: uses saved responses where they are under 180 days old
+python run_pipeline.py --refresh    # ask TMDb for everything again, ignoring saved responses
+python run_pipeline.py --limit 1    # quick check on the first N ids only
 ```
+
+A `--limit` run writes to `out/limited/` and leaves full results in `out/` unchanged.
+
+A run where every response is already saved needs no network and no API key.
 
 Input: `data/input/id_list.csv` (one column of TMDb film ids).
 Outputs are written to `out/` (not committed; regenerated on each run).

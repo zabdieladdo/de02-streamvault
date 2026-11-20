@@ -13,3 +13,82 @@ def write_ids(tmp_path):
         return path
 
     return write
+
+
+# --- fetch-stage helpers -------------------------------------------------------
+import json
+import re
+from types import SimpleNamespace
+
+from pipeline import config
+
+TEST_KEY = "dummy-value-for-tests"  # not a real credential
+
+
+def ok_body(tmdb_id, endpoint="details"):
+    body = {"id": tmdb_id, "title": f"Film {tmdb_id}"}
+    if endpoint == "credits":
+        body = {"id": tmdb_id, "cast": [], "crew": []}
+    return json.dumps(body).encode("utf-8")
+
+
+NOT_FOUND_BODY = json.dumps(
+    {"success": False, "status_code": 34, "status_message": "The resource you requested could not be found."}
+).encode("utf-8")
+
+
+class FakeResponse:
+    def __init__(self, status_code=200, content=b"", headers=None, retries=0):
+        self.status_code = status_code
+        self.content = content
+        self.headers = headers or {}
+        self.raw = SimpleNamespace(retries=SimpleNamespace(history=[object()] * retries))
+
+    def json(self):
+        return json.loads(self.content)
+
+
+class FakeSession:
+    """Scripted stand-in for requests.Session.
+
+    script maps a path ("/movie/603") to a FakeResponse, an Exception to raise, or a list of
+    those used in order (the last one repeats). Unscripted paths answer 200 with a matching body.
+    """
+
+    def __init__(self, script=None):
+        self.script = dict(script or {})
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        path = url.removeprefix(config.API_BASE)
+        self.calls.append(path)
+        item = self.script.get(path)
+        if isinstance(item, list):
+            item = item.pop(0) if len(item) > 1 else item[0]
+        if item is None:
+            m = re.fullmatch(r"/movie/(\d+)(/credits)?", path)
+            tmdb_id = int(m.group(1))
+            item = FakeResponse(200, ok_body(tmdb_id, "credits" if m.group(2) else "details"))
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+
+
+@pytest.fixture
+def fetch_env(tmp_path, monkeypatch, no_sleep):
+    """Point every fetch path at tmp_path and set a test key; never read the real .env."""
+    raw = tmp_path / "raw"
+    monkeypatch.setattr(config, "RAW_DIR", raw)
+    monkeypatch.setattr(config, "RAW_DETAILS_DIR", raw / "details")
+    monkeypatch.setattr(config, "RAW_CREDITS_DIR", raw / "credits")
+    monkeypatch.setattr(config, "FETCH_LOG", raw / "fetch_log.csv")
+    monkeypatch.setattr(config, "DOTENV_PATH", tmp_path / "no.env")
+    monkeypatch.setenv("TMDB_API_KEY", TEST_KEY)
+    return SimpleNamespace(raw=raw, key=TEST_KEY, tmp_path=tmp_path)
