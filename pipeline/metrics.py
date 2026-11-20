@@ -98,3 +98,107 @@ def compare_windows(kpis_all: pd.DataFrame, kpis_2000: pd.DataFrame) -> pd.DataF
 
 def disagreeing_measures(comparison: pd.DataFrame) -> list[str]:
     return comparison.loc[~comparison["agree"], "measure"].tolist()
+
+
+IMPACT_COLUMNS = [
+    "decision", "variant", "window", "films_affected", "franchise_n", "franchise_median_roi",
+    "standalone_n", "standalone_median_roi", "gap", "leader", "leader_changes",
+]
+ALL_YEARS, FROM_2000 = "all years", "2000 onward"
+
+
+def _windows(films: pd.DataFrame):
+    """The two windows and the films in each: a fixed pair, not a loop over films."""
+    return ((ALL_YEARS, films), (FROM_2000, films[films["in_window_2000"]]))
+
+
+def _with_roi(films: pd.DataFrame, usable: pd.Series) -> pd.DataFrame:
+    """Recompute usable and the multiple under a different rule. Budget 0 is never divided."""
+    budget = films["budget"].astype("float64").fillna(0)
+    revenue = films["revenue"].astype("float64").fillna(0)
+    roi = (revenue / budget.where(budget > 0)).where(usable)
+    return films.assign(roi_usable=usable, roi=roi)
+
+
+def _impact_row(decision, variant, window, affected, kpis, min_group, baseline_leader):
+    k = kpis.set_index("group")
+    fr, st = k.loc["franchise"], k.loc["standalone"]
+    gap = fr["median_roi"] - st["median_roi"]
+    comparable = pd.notna(gap) and fr["n_roi_usable"] >= min_group and st["n_roi_usable"] >= min_group
+    leader = ("tie" if gap == 0 else "franchise" if gap > 0 else "standalone") if comparable else ""
+    return {
+        "decision": decision, "variant": variant, "window": window,
+        "films_affected": int(affected),
+        "franchise_n": int(fr["n_roi_usable"]), "franchise_median_roi": fr["median_roi"],
+        "standalone_n": int(st["n_roi_usable"]), "standalone_median_roi": st["median_roi"],
+        "gap": gap, "leader": leader,
+        "leader_changes": False if baseline_leader is None else leader != baseline_leader,
+    }
+
+
+def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_mapping: pd.DataFrame) -> pd.DataFrame:
+    """One row per decision and window: what the headline would be if the decision went the other way.
+
+    Rows with 0 films affected stay. `leader_changes` compares with the baseline row of the same window.
+    The baseline applies the minimum group size (S14), so "leader" is blank where a group is too small.
+    """
+    f = films_clean
+    budget = f["budget"].astype("float64").fillna(0)
+    revenue = f["revenue"].astype("float64").fillna(0)
+    released, units = f["is_released"], f["units_error_likely"]
+    min_default = config.MIN_GROUP_FOR_CONCLUSION
+    rows, baseline_leader = [], {}
+
+    def add(decision, variant, frame, affected, min_group=min_default, kpis_override=None):
+        """Add the rows for both windows. `frame` is the full table under this variant."""
+        for window, part in _windows(frame):
+            kpis = group_kpis(part, window) if kpis_override is None else kpis_override(window, part)
+            n = affected(window, part) if callable(affected) else affected
+            rows.append(_impact_row(decision, variant, window, n, kpis, min_group,
+                                    baseline_leader.get(window)))
+            if decision == "baseline":
+                baseline_leader[window] = rows[-1]["leader"]
+
+    add("baseline", "as decided", f, 0)
+
+    # repeats removed (ADR-002): add back one extra copy for each load-stage repeat and the IMDb id match
+    q = quarantine[(quarantine["stage"] == "load") & (quarantine["reason_code"] == "repeat")]
+    repeat_ids = pd.to_numeric(q["raw_value"], errors="coerce")
+    matched = pd.to_numeric(i01_mapping["tmdb_id"], errors="coerce") if len(i01_mapping) else pd.Series(dtype="float64")
+    extra_ids = pd.concat([repeat_ids, matched]).dropna().astype("int64").rename("tmdb_id").to_frame()
+    extras = extra_ids.merge(f, on="tmdb_id", how="inner", validate="many_to_one")
+    kept = pd.concat([f.assign(_extra=False), extras.assign(_extra=True)], ignore_index=True)
+    add("repeats removed (ADR-002)", "repeats kept", kept,
+        lambda w, part: part["_extra"].sum())
+
+    n_not_found = int((quarantine["reason_code"] == "not_found_on_api").sum())
+    add("not-found ids excluded (ADR-008)", "no data to include", f, n_not_found)
+
+    ok = released & (budget > 0) & (revenue > 0) & ~units
+    zero_mask = (budget == 0) | (revenue == 0)
+    add("zero money = not reported (S03, S04)", "zeros treated as real",
+        _with_roi(f, released & (budget > 0) & ~units).assign(_hit=zero_mask),
+        lambda w, part: part["_hit"].sum())
+    add("unreleased excluded (S20)", "unreleased included",
+        _with_roi(f, (budget > 0) & (revenue > 0) & ~units).assign(_hit=~released),
+        lambda w, part: part["_hit"].sum())
+    add("likely units errors excluded (D12)", "included",
+        _with_roi(f, released & (budget > 0) & (revenue > 0)).assign(_hit=units),
+        lambda w, part: part["_hit"].sum())
+
+    def without_top(window, part):
+        k = group_kpis(part, window)
+        return k.assign(
+            median_roi=k["median_roi_without_top"],
+            n_roi_usable=(k["n_roi_usable"] - 1).clip(lower=0),
+        )
+    add("outlier kept (D14)", "top film removed per group", f,
+        lambda w, part: group_kpis(part, w)["top_film_title"].notna().sum(),
+        kpis_override=without_top)
+
+    for label, threshold in (("none", 0), ("3", config.MIN_BUNDLE_FOR_RANKING), ("5", min_default)):
+        add("minimum group size (S14)", label, f,
+            lambda w, part, t=threshold: (group_kpis(part, w)["n_roi_usable"] < t).sum(),
+            min_group=threshold)
+
+    return pd.DataFrame(rows, columns=IMPACT_COLUMNS)
