@@ -20,6 +20,8 @@ The brief sets no numeric target (confirmed 19 Nov). The fetch is timed separate
 | Full fetch, every response saved: 0 requests, 229 answered from the cache | 3 | 0.076 s | n/a | 0.089 s | No target set |
 | One request (all 229 in the fetch log) | 229 | 0.299 s | 0.382 s | 0.690 s | Not applicable |
 | Flatten and join stage, warm | 1 (20 Nov, 04:24 UTC) | 0.39 s | n/a | 0.39 s | Part of the analysis stage; full measurement in a later step |
+| Clean stage, warm | 3 (20 Nov, 07:11 to 07:35 UTC) | 0.022 s | n/a | 0.027 s | Part of the analysis stage |
+| Measure stage, warm | 3 (20 Nov, 07:11 to 07:35 UTC) | 0.225 s | n/a | 0.249 s | Part of the analysis stage |
 
 - The cold fetch made 227 requests, not 229, because id 155 was already saved from the `--limit 1` run just before it.
 - Every request was answered on the first attempt: no retries and no 429 in 229 requests.
@@ -37,3 +39,4 @@ Not yet measured; added when the analysis stage is built.
 - At 500 titles the fetch would be about 1,000 requests, which at this pace is roughly 5 minutes. This is an estimate worked out from this run, not a measurement.
 - The cached runs measure reading saved files and writing the log; they say nothing about how long the analysis stage will take.
 - The first flatten run on 20 Nov (04:17 UTC) took 8.85 s, recorded as `seconds.flatten` in `out/run_log.jsonl`. Five later full runs took 0.39 to 0.64 s. The cause was not measured; a cold first read of newly written files is the likely one. Cold-start timing is measured in the measurement step with a stated method.
+- The same pattern appeared again at 07:11 UTC: the first full run after the one at 04:24 UTC took 5.54 s in the flatten stage, and the two runs after it 0.34 s each (`seconds.flatten` in `out/run_log.jsonl`). The clean and measure figures above come from those same three runs. Cause still not measured.
