@@ -150,7 +150,7 @@ def test_live_fetch_returns_details_and_credits_for_each_film(fetch_env):
 def test_live_fetch_leaves_the_snapshot_and_the_fetch_log_byte_identical(fetch_env, monkeypatch):
     fetch.fetch_all(make_ids(603, 155), session=FakeSession(), key=TEST_KEY)  # the snapshot being checked
     before = tree_hash(config.RAW_DIR)
-    assert any(name.endswith("fetch_log.csv") for name in before) and len(before) == 5
+    assert any(name.endswith("fetch_log.csv") for name in before) and len(before) == 7  # 4 files, the log, 2 snapshots
 
     def forbidden(*args, **kwargs):
         raise AssertionError("the spot-check must never write the snapshot")

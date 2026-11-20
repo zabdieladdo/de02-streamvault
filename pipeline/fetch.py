@@ -1,4 +1,5 @@
 """Stage 2: fetch details and credits from TMDb with retries, a rate limit, a cache and a fetch log."""
+import json
 import os
 import time
 from dataclasses import dataclass, field
@@ -33,6 +34,8 @@ REASON_DETAIL = {
     "fetch_failed": "Request failed after retries",
 }
 REASON_ORDER = list(REASON_DETAIL)
+
+SNAPSHOT_NAMES = {"details": "snapshot_movie.jsonl", "credits": "snapshot_credits.jsonl"}
 
 
 @dataclass
@@ -231,6 +234,98 @@ def _log_row(r: FetchResult) -> dict:
     }
 
 
+# --- snapshots: one file per endpoint, so the analysis opens two files instead of about a thousand -----------
+# The per-film files stay the source of truth (ADR-008). A snapshot holds one line per film whose fetch-log
+# status is "ok": {"tmdb_id", "fetched_at", "response"}. It is a derived file in data/raw/, ignored by git and
+# expired with the per-film files, and it can always be rebuilt from them.
+
+def snapshot_file(endpoint: str) -> Path:
+    """Where the snapshot for this endpoint lives (beside the per-film folders)."""
+    return config.RAW_DIR / SNAPSHOT_NAMES[endpoint]
+
+
+def expected_snapshot(endpoint: str, log: dict, now: datetime | None = None) -> dict[int, str]:
+    """film id -> fetched_at for every ok fetch-log row of this endpoint that is still inside the 180 days."""
+    now = now or datetime.now(UTC)
+    wanted = {}
+    for (tmdb_id, name), row in log.items():
+        if name != endpoint or row["outcome"] != "ok":
+            continue
+        age = _age_days(row["fetched_at"], now)
+        if age is not None and age < config.CACHE_MAX_AGE_DAYS:  # an expired film is left out
+            wanted[tmdb_id] = row["fetched_at"]
+    return wanted
+
+
+def build_snapshot(endpoint: str, log: dict, now: datetime | None = None) -> dict[int, tuple[str, dict]]:
+    """Write the snapshot from the per-film files, to a temp file first, and return what it holds.
+
+    A film whose file is missing, not valid JSON or for another id is left out; the flatten stage then
+    reads that film from its own file and quarantines it as before.
+    """
+    held: dict[int, tuple[str, dict]] = {}
+    for tmdb_id, fetched_at in sorted(expected_snapshot(endpoint, log, now).items()):
+        path = cache_file(endpoint, tmdb_id)
+        try:
+            body = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if isinstance(body, dict) and body.get("id") == tmdb_id:
+            held[tmdb_id] = (fetched_at, body)
+    lines = [
+        json.dumps({"tmdb_id": i, "fetched_at": at, "response": body}, ensure_ascii=False, separators=(",", ":"))
+        for i, (at, body) in held.items()
+    ]
+    target = snapshot_file(endpoint)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    text = chr(10).join(lines) + (chr(10) if lines else "")
+    tmp.write_bytes(text.encode("utf-8"))
+    os.replace(tmp, target)
+    return held
+
+
+def read_snapshot(endpoint: str) -> dict[int, tuple[str, dict]] | None:
+    """What the snapshot holds (film id -> fetched_at, response), or None if it is missing or unreadable."""
+    path = snapshot_file(endpoint)
+    if not path.is_file():
+        return None
+    held: dict[int, tuple[str, dict]] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").split(chr(10)):
+            if not line:
+                continue
+            record = json.loads(line)
+            held[int(record["tmdb_id"])] = (record["fetched_at"], record["response"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return held
+
+
+def snapshot_problem(endpoint: str, held: dict | None, log: dict, now: datetime | None = None) -> str:
+    """Why a snapshot cannot be trusted ("" when its ids and fetched_at values match the fetch log)."""
+    wanted = expected_snapshot(endpoint, log, now)
+    if held is None:
+        if not wanted and not snapshot_file(endpoint).exists():
+            return ""  # nothing to hold, so no file is needed
+        return f"{endpoint} snapshot missing or unreadable"
+    have = {i: at for i, (at, _) in held.items()}
+    if have == wanted:
+        return ""
+    extra, absent = len(have.keys() - wanted.keys()), len(wanted.keys() - have.keys())
+    changed = sum(1 for i in have.keys() & wanted.keys() if have[i] != wanted[i])
+    return f"{endpoint} snapshot differs from the fetch log ({absent} missing, {extra} extra, {changed} changed)"
+
+
+def build_snapshots(log: dict, now: datetime | None = None) -> None:
+    """Rebuild both snapshots; a failure stops the run (check C-34)."""
+    try:
+        for endpoint in SNAPSHOT_NAMES:
+            build_snapshot(endpoint, log, now)
+    except OSError as exc:
+        raise PipelineStopError(f"Could not write the response snapshots: {exc}", check_id="C-34") from exc
+
+
 # --- the fetch loop -----------------------------------------------------------
 
 def fetch_all(
@@ -370,6 +465,12 @@ def fetch_all(
         if state["opened_here"]:
             state["session"].close()  # release the connections this stage opened
 
+    started = time.perf_counter()
+    missing = any(expected_snapshot(e, log, now) and not snapshot_file(e).is_file() for e in SNAPSHOT_NAMES)
+    if state["network_calls"] or missing:  # something changed, or there is no snapshot yet
+        build_snapshots(log, now)
+    snapshot_build_s = time.perf_counter() - started
+
     results = pd.DataFrame(rows, columns=RESULT_COLUMNS)
     for col in ("status_code", "attempts"):
         results[col] = pd.to_numeric(results[col]).astype("Int64")
@@ -383,6 +484,7 @@ def fetch_all(
         preflight_ok=state["preflight_ok"],
         refresh=refresh,
         limit=limit,
+        extra={"snapshot_build_s": snapshot_build_s},
     )
 
 
