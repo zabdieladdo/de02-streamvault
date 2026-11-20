@@ -2,7 +2,7 @@
 
 ## Summary
 
-Load stage only; the ranking is final after the fetch stage. Of the 127 rows in the id list, 117 go to the API and 10 are quarantined: six repeats, and four rows with no usable id (a blank, `N/A`, `-1` and an IMDb id). Repeats rank highest because a film counted twice can move a median in a small group. Five ids above 7 million were sent forward and are waiting for the API's answer.
+The id list had 127 rows. Ten left at the load stage (six repeats and four rows with no usable id) and five more left at the fetch stage, where TMDb did not recognise them. That leaves 112 films fetched with details and credits, as of 20 Nov 2026. The highest-risk finding so far is the six repeated ids: a film counted twice can move a median in a small group. The five ids TMDb does not know cannot be evaluated, and nobody can say which films they stand for.
 
 ## Reconciliation
 
@@ -15,6 +15,8 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 | Load: zero or negative | 123 | -1 | `-1` |
 | Load: repeats | 117 | -6 | Six ids listed twice |
 | Sent to the API | 117 | | |
+| Fetch: not found on TMDb | 112 | -5 | Five ids returned "not found" (F-05) |
+| Fetched with details and credits | 112 | | Snapshot 20 Nov 2026 |
 
 ## Findings, ranked by risk
 
@@ -27,14 +29,14 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 - **What I did about it:** kept the first occurrence, quarantined the rest.
 - **Residual risk:** repeats under different ids (the same film under two TMDb ids) are not caught here; checked after the fetch by title and year (C-20).
 
-### F-02: The standard file reader drops a row without warning — Severity: Medium
+### F-05: Five ids that TMDb does not know — Severity: Medium
 
-- **What it is:** a default read returns 126 rows, because the blank line is skipped and `N/A` becomes a null.
-- **How I detected it:** comparing the default read with a separate line count.
-- **Scale:** 1 row lost; any blank line in a future list would be lost the same way.
-- **Effect on the client's number:** none on the averages, but the counts would not reconcile, which undermines every other figure in front of the board.
-- **What I did about it:** read as text with blank lines kept; the run stops if the two counts differ (C-01).
-- **Residual risk:** low; covered by a test.
+- **What it is:** 7733901, 8471293, 8471294, 9412887 and 9412888 (file lines 99, 18, 73, 35 and 93) came back "not found" from TMDb. They are far above the range of film ids seen elsewhere in the list, and two of them are consecutive pairs (8471293 and 8471294; 9412887 and 9412888). They look like another system's catalogue numbers.
+- **How I detected it:** the film request for each id returned HTTP 404 with the message "The resource you requested could not be found.", recorded in the fetch log.
+- **Scale:** 5 of 117 ids sent to TMDb (4.3%); 5 of 127 rows in the file (3.9%).
+- **Effect on the client's number:** five candidate titles cannot be evaluated, and nobody knows which films they are. If any is part of a bundle, that bundle looks smaller in the analysis than it is.
+- **What I did about it:** quarantined as `not_found_on_api` with TMDb's message. Credits were not requested for them. The answer is remembered for 180 days, so a re-run does not ask again, and it is not counted as a failed request (ADR-008, ADR-009).
+- **Residual risk:** if the ids are real titles in another catalogue, those titles are missing from the shortlist. Q4 asks what they refer to.
 
 ### F-03: One IMDb id in a list of TMDb ids — Severity: Medium
 
@@ -45,6 +47,15 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 - **What I did about it:** quarantined with a note; resolving IMDb ids is the planned improvement beyond the brief.
 - **Residual risk:** it suggests one of the three sources used IMDb ids; next year's list may contain more.
 
+### F-02: The standard file reader drops a row without warning — Severity: Medium
+
+- **What it is:** a default read returns 126 rows, because the blank line is skipped and `N/A` becomes a null.
+- **How I detected it:** comparing the default read with a separate line count.
+- **Scale:** 1 row lost; any blank line in a future list would be lost the same way.
+- **Effect on the client's number:** none on the averages, but the counts would not reconcile, which undermines every other figure in front of the board.
+- **What I did about it:** read as text with blank lines kept; the run stops if the two counts differ (C-01).
+- **Residual risk:** low; covered by a test.
+
 ### F-04: Three rows carry no id — Severity: Low
 
 - **What it is:** a blank (line 69), `N/A` and `-1`.
@@ -54,13 +65,9 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 - **What I did about it:** quarantined with reasons.
 - **Residual risk:** if these were placeholders for titles someone meant to add, those titles are missing and nobody can say which.
 
-### Pending after the fetch stage
-
-- Five ids above 7 million (7733901, 8471293, 8471294, 9412887, 9412888) were flagged and sent forward. Severity set once the API answers.
-
 ### Observation: problems cluster near the end of the file
 
-Of the 15 rows that are quarantined or flagged (10 quarantined, 5 large ids), 7 sit in lines 2-89 (7 of 88 rows, 8%) and 8 in lines 90-128 (8 of 39 rows, 21%). Lines 90-102 alone hold 7 of 13. One reading: the last block was appended from a single source, possibly the studio batch, which would also explain the IMDb id. This is a hypothesis, not a finding: the file has no source column. It matters for Adjoa because, if true, checking that one source's next batch catches most of next year's problems (Q1).
+Of the 15 rows that are quarantined or flagged (10 quarantined at load, 5 large ids), 7 sit in lines 2-89 (7 of 88 rows, 8%) and 8 in lines 90-128 (8 of 39 rows, 21%). Lines 90-102 alone hold 7 of 13. Two of the five not-found ids (lines 93 and 99) are in the last block. One reading: the last block was appended from a single source, possibly the studio batch, which would also explain the IMDb id. This is a hypothesis, not a finding: the file has no source column. It matters for Adjoa because, if true, checking that one source's next batch catches most of next year's problems (Q1).
 
 ## Looked wrong, is not wrong
 
@@ -72,3 +79,4 @@ Of the 15 rows that are quarantined or flagged (10 quarantined, 5 large ids), 7 
 ## Could not verify
 
 - Which of the three sources each row came from: the file has no source column, so repeats and bad values cannot be traced to the source that produced them. The clustering above suggests, but does not show, one source.
+- What the five not-found ids refer to: TMDb has no record of them, so we cannot tell whether they are films, and if so which.
