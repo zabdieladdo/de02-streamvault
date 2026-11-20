@@ -1,7 +1,7 @@
 """Resolve IMDb ids that stage 1 quarantined, through TMDb's find endpoint. Optional: run_pipeline.py never calls it.
 
 The find endpoint is a third endpoint, outside the two the brief names. Answers are saved to data/raw/find/ under
-the same 180-day rule as the other saved responses (ADR-008), and the session, timeout, retries, rate limit and
+the same 180-day rule as the other saved responses (ADR-002), and the session, timeout, retries, rate limit and
 key redaction are those of the fetch stage.
 """
 import json

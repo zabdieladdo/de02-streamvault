@@ -10,7 +10,7 @@ from pipeline import config
 REASON_DETAIL = {
     "blank": "Empty value",
     "placeholder_text": "Placeholder text, no id",
-    "imdb_id_not_tmdb": "IMDb id format, not a TMDb id; not resolved in this analysis (see ADR-002)",
+    "imdb_id_not_tmdb": "IMDb id format, not a TMDb id; not resolved in this analysis (see F-03)",
     "not_positive": "Zero or negative; not a valid TMDb id",
     "decimal_form": "Number written with a decimal point (spreadsheet export?); not auto-corrected",
     "invalid_text": "Not a whole number",

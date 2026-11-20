@@ -186,18 +186,18 @@ def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_map
 
     add("baseline", "as decided", f, 0)
 
-    # repeats removed (ADR-002): add back one extra copy for each load-stage repeat and the IMDb id match
+    # repeats removed (F-01): add back one extra copy for each load-stage repeat and the IMDb id match
     q = quarantine[(quarantine["stage"] == "load") & (quarantine["reason_code"] == "repeat")]
     repeat_ids = pd.to_numeric(q["raw_value"], errors="coerce")
     matched = pd.to_numeric(i01_mapping["tmdb_id"], errors="coerce") if len(i01_mapping) else pd.Series(dtype="float64")
     extra_ids = pd.concat([repeat_ids, matched]).dropna().astype("int64").rename("tmdb_id").to_frame()
     extras = extra_ids.merge(f, on="tmdb_id", how="inner", validate="many_to_one")
     kept = pd.concat([f.assign(_extra=False), extras.assign(_extra=True)], ignore_index=True)
-    add("repeats removed (ADR-002)", "repeats kept", kept,
+    add("repeats removed (F-01)", "repeats kept", kept,
         lambda w, part: part["_extra"].sum())
 
     n_not_found = int((quarantine["reason_code"] == "not_found_on_api").sum())
-    add("not-found ids excluded (ADR-008)", "no data to include", f, n_not_found)
+    add("not-found ids excluded (ADR-002)", "no data to include", f, n_not_found)
 
     zero_mask = (budget == 0) | (revenue == 0)
     add("zero money = not reported (S03, S04)", "zeros treated as real",
@@ -206,7 +206,7 @@ def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_map
     add("unreleased excluded (S20)", "unreleased included",
         _with_roi(f, (budget > 0) & (revenue > 0) & ~units).assign(_hit=~released),
         lambda w, part: part["_hit"].sum())
-    add("likely units errors excluded (D12)", "included",
+    add("likely units errors excluded (S24)", "included",
         _with_roi(f, released & (budget > 0) & (revenue > 0)).assign(_hit=units),
         lambda w, part: part["_hit"].sum())
 
@@ -216,7 +216,7 @@ def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_map
             median_roi=k["median_roi_without_top"],
             n_roi_usable=(k["n_roi_usable"] - 1).clip(lower=0),
         )
-    add("outlier kept (D14)", "top film removed per group", f,
+    add("outlier kept (F-08)", "top film removed per group", f,
         lambda w, part: group_kpis(part, w)["top_film_title"].notna().sum(),
         kpis_override=without_top)
 

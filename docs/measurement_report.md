@@ -2,7 +2,7 @@
 
 ## Target
 
-A full cached run, from `python run_pipeline.py` to the last output file, takes under 10 seconds of wall time at 500 titles (S05). The fetch from TMDb is outside the budget: it is timed separately, and the brief sets no numeric target for it (confirmed 19 Nov). Our own ceiling for requests is 4 a second (ADR-010).
+A full cached run, from `python run_pipeline.py` to the last output file, takes under 10 seconds of wall time at 500 titles (S05). The fetch from TMDb is outside the budget: it is timed separately, and the brief sets no numeric target for it (confirmed 19 Nov). Our own ceiling for requests is 4 a second (`REQUESTS_PER_SECOND` in `pipeline/config.py`).
 
 "Cached" means every response is already saved and no network request is made. "Wall time" is the time from starting the process to its end, so it includes Python start-up and imports, which Adjoa waits through. The sum of the stage times (our code only) is reported beside it.
 

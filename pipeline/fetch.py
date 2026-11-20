@@ -235,7 +235,7 @@ def _log_row(r: FetchResult) -> dict:
 
 
 # --- snapshots: one file per endpoint, so the analysis opens two files instead of about a thousand -----------
-# The per-film files stay the source of truth (ADR-008). A snapshot holds one line per film whose fetch-log
+# The per-film files stay the source of truth (ADR-002). A snapshot holds one line per film whose fetch-log
 # status is "ok": {"tmdb_id", "fetched_at", "response"}. It is a derived file in data/raw/, ignored by git and
 # expired with the per-film files, and it can always be rebuilt from them.
 

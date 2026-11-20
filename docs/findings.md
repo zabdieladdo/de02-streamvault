@@ -65,7 +65,7 @@ Order after the spot-check: F-06, F-07, F-09 (High), F-01 (High), F-08, F-10, F-
 - **How I detected it:** median beside mean on every row; leave-one-out.
 - **Scale:** one film, The Good, the Bad and the Ugly (1966, 32.4×), lifts the standalone mean; removing it moves the standalone median from 3.84 to 3.24.
 - **Effect on the client's number:** anyone comparing averages would conclude the two groups perform alike.
-- **What I did about it:** the median is the headline (ADR-006).
+- **What I did about it:** the median is the headline (ADR-005).
 - **Residual risk:** none for the direction of the result; the size of the gap depends on the measure chosen.
 
 ### F-10: Every film after the first earns less, not only middle entries — Severity: Medium
