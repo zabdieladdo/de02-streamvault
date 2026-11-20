@@ -5,7 +5,7 @@ using film data from TMDb. Built so it can be re-run each quarter on a new id li
 
 Built by Zabdiel; run each quarter by Adjoa.
 
-Tested on: Python 3.11 and 3.15, date: ______ (to be filled in after the clean-clone test).
+Tested on: Python 3.15
 
 ## Setup (once)
 
