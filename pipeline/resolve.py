@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pandas as pd
 import requests
 
 from pipeline import config, fetch
@@ -132,3 +133,95 @@ def lookup_all(
         if opened_here and session is not None:
             session.close()
     return [results[i] for i in imdb_ids]
+
+
+# --- the report and the suggested list ---------------------------------------------------------------------
+
+IMDB_REASON = "imdb_id_not_tmdb"
+RESOLVED_NAME, SUGGESTED_NAME = "resolved_ids.csv", "id_list_suggested.csv"
+TABLE_COLUMNS = [
+    "line_number", "imdb_id", "outcome", "tmdb_id", "title", "release_year", "already_in_list",
+    "first_line_number", "note",
+]
+
+
+def load_inputs(out_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The quarantined IMDb ids (line number, value) and the valid ids of the client's list, from a pipeline run."""
+    missing = [n for n in ("quarantine.csv", "ids_to_fetch.csv") if not (out_dir / n).is_file()]
+    if missing:
+        raise PipelineStopError(f"Missing {', '.join(missing)} in {out_dir}. Run python run_pipeline.py first.")
+    quarantine = pd.read_csv(out_dir / "quarantine.csv", dtype=str, keep_default_na=False)
+    rows = quarantine[quarantine["reason_code"] == IMDB_REASON][["line_number", "raw_value"]].copy()
+    rows["line_number"] = rows["line_number"].astype("int64")
+    return rows.reset_index(drop=True), pd.read_csv(out_dir / "ids_to_fetch.csv")
+
+
+def build_table(rows: pd.DataFrame, lookups: list[Lookup], ids_to_fetch: pd.DataFrame) -> pd.DataFrame:
+    """One row per quarantined IMDb id, with whether a resolved film is already on the client's list."""
+    first_line = dict(zip(ids_to_fetch["tmdb_id"], ids_to_fetch["first_line_number"], strict=True))
+    records = []
+    for line, look in zip(rows["line_number"], lookups, strict=True):  # a few rows, one per quarantined id
+        on_list = look.tmdb_id in first_line
+        records.append(
+            {
+                "line_number": line, "imdb_id": look.imdb_id, "outcome": look.outcome, "tmdb_id": look.tmdb_id,
+                "title": look.title, "release_year": look.release_year, "already_in_list": on_list,
+                "first_line_number": first_line.get(look.tmdb_id), "note": look.note,
+            }
+        )
+    table = pd.DataFrame(records, columns=TABLE_COLUMNS)
+    for column in ("tmdb_id", "release_year", "first_line_number"):
+        table[column] = table[column].astype("Int64")
+    return table
+
+
+def suggested_ids(ids_to_fetch: pd.DataFrame, table: pd.DataFrame) -> list[int] | None:
+    """The client's valid ids plus the resolved films that are not on it; None when there is nothing to add."""
+    resolved = table[(table["outcome"] == RESOLVED) & ~table["already_in_list"]]
+    new = list(dict.fromkeys(int(i) for i in resolved.sort_values("line_number")["tmdb_id"]))
+    if not new:
+        return None
+    return [*(int(i) for i in ids_to_fetch["tmdb_id"]), *new]
+
+
+def write_results(out_dir: Path, table: pd.DataFrame, suggested: list[int] | None) -> None:
+    """Write resolved_ids.csv, and the suggested list only when there is one (an old suggestion is removed)."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    table.to_csv(out_dir / RESOLVED_NAME, index=False, encoding="utf-8")
+    target = out_dir / SUGGESTED_NAME
+    if suggested is None:
+        target.unlink(missing_ok=True)
+    else:
+        pd.DataFrame({"tmdb_id": suggested}).to_csv(target, index=False, encoding="utf-8")
+
+
+def _line(row: dict) -> str:
+    label = f"  {row['imdb_id']:<12}->  "
+    if row["outcome"] == RESOLVED:
+        year = f" ({row['release_year']})" if pd.notna(row["release_year"]) else ""
+        film = f"{row['tmdb_id']}  {row['title']}{year}"
+        if row["already_in_list"]:
+            return f"{label}{film}   already on the list (line {row['first_line_number']}): nothing to add"
+        return f"{label}{film}   not on the list: added to the suggested list"
+    if row["outcome"] == NOT_FOUND:
+        return f"{label}not found on TMDb"
+    if row["outcome"] == AMBIGUOUS:
+        return f"{label}ambiguous, not added: {row['note']}"
+    return f"{label}failed, not added: {row['note']}"
+
+
+def format_summary(table: pd.DataFrame, suggested: list[int] | None, out_dir: Path, n_valid: int) -> str:
+    """The text the command prints."""
+    lines = ["IMDb id resolver", f"  ids found in quarantine   {len(table)}"]
+    lines += [_line(row) for row in table.to_dict("records")]  # one line per id
+    if suggested is None:
+        lines.append("  suggested list            not written (no new films)")
+    else:
+        new = len(suggested) - n_valid
+        lines.append(
+            f"  suggested list            written to {out_dir / SUGGESTED_NAME} ({n_valid} ids from the client's "
+            f"list + {new} new)"
+        )
+        lines.append("  To use it: read it first, then copy it out of the out folder (a full run clears the .csv")
+        lines.append("  files there) and set STREAMVAULT_INPUT_IDS to the copy. The client's file is not changed.")
+    return chr(10).join(lines)
