@@ -143,3 +143,84 @@ def middle_entry_test(films_clean: pd.DataFrame, bundles: pd.DataFrame) -> tuple
     ]
     summary = pd.DataFrame(rows, columns=["measure", "value", "note"])
     return ep, summary
+
+
+SIGNAL_ORDER = [
+    "reliable", "reliable negative", "mixed", "promising, too little evidence", "too little evidence",
+]
+SIGNAL_COLUMNS = [
+    "role", "person_id", "name", "n_films", "n_titles", "titles_above", "hit_rate", "median_title_roi",
+    "n_units", "vote_titles_above", "vote_hit_rate", "largest_unit_films", "signal",
+]
+
+
+def _hit_rate_fraction() -> tuple[int, int]:
+    """RELIABLE_HIT_RATE as whole numbers (2/3 gives 2 and 3) so comparisons need no float rounding."""
+    from fractions import Fraction
+
+    frac = Fraction(config.RELIABLE_HIT_RATE).limit_denominator(1000)
+    return frac.numerator, frac.denominator
+
+
+def talent_join_rows(talent: pd.DataFrame, films_clean: pd.DataFrame) -> tuple[int, bool]:
+    """Rows after joining talent to films on film id, and whether the film key is unique (C-29)."""
+    joined = talent[["tmdb_id"]].merge(films_clean[["tmdb_id"]], on="tmdb_id", how="left")
+    return len(joined), bool(films_clean["tmdb_id"].is_unique)
+
+
+def talent_signal(
+    talent: pd.DataFrame, films_clean: pd.DataFrame, list_median_roi: float, list_median_votes: float
+) -> pd.DataFrame:
+    """One row per person and role: how often their independent titles beat the list median multiple.
+
+    Titles are counted once per person: all of a person's films in one collection are one title.
+    Directors and lead actors are separate rows.
+    """
+    # A repeated film id would multiply talent rows; it is dropped here and reported by C-29.
+    films = films_clean[
+        ["tmdb_id", "roi", "roi_usable", "vote_count", "is_franchise", "collection_id"]
+    ].drop_duplicates("tmdb_id")
+    j = talent.merge(films, on="tmdb_id", how="left", validate="many_to_one")
+
+    in_collection = j["is_franchise"].fillna(False).astype(bool) & j["collection_id"].notna()
+    j["title_unit"] = ("film:" + j["tmdb_id"].astype("string")).where(
+        ~in_collection, "collection:" + j["collection_id"].astype("string")
+    )
+    j["roi_u"] = j["roi"].astype("float64").where(j["roi_usable"].fillna(False).astype(bool))
+    j["votes"] = j["vote_count"].astype("float64")
+
+    units = j.groupby(["person_id", "role", "title_unit"], as_index=False).agg(
+        name=("name", "first"), unit_roi=("roi_u", "median"), unit_votes=("votes", "median"),
+        unit_films=("tmdb_id", "size"),
+    )
+    units["above"] = units["unit_roi"] > list_median_roi
+    units["vote_above"] = units["unit_votes"] > list_median_votes
+
+    p = units.groupby(["person_id", "role"], as_index=False).agg(
+        name=("name", "first"), n_films=("unit_films", "sum"), n_titles=("unit_roi", "count"),
+        titles_above=("above", "sum"), median_title_roi=("unit_roi", "median"),
+        n_units=("title_unit", "size"), vote_titles_above=("vote_above", "sum"),
+        largest_unit_films=("unit_films", "max"),
+    )
+    p[["n_films", "n_titles", "titles_above", "n_units", "vote_titles_above", "largest_unit_films"]] = p[
+        ["n_films", "n_titles", "titles_above", "n_units", "vote_titles_above", "largest_unit_films"]
+    ].astype("int64")
+    p["hit_rate"] = (p["titles_above"] / p["n_titles"]).where(p["n_titles"] > 0)
+    p["vote_hit_rate"] = p["vote_titles_above"] / p["n_units"]
+
+    num, den = _hit_rate_fraction()
+    enough = p["n_titles"] >= config.RELIABLE_MIN_TITLES
+    reliable = enough & (p["titles_above"] * den >= p["n_titles"] * num)
+    negative = enough & (p["titles_above"] * den <= p["n_titles"] * (den - num))
+    promising = (p["n_titles"] == 2) & (p["titles_above"] == 2)
+    p["signal"] = np.select(
+        [reliable, negative, enough, promising],
+        ["reliable", "reliable negative", "mixed", "promising, too little evidence"],
+        default="too little evidence",
+    )
+    p["_order"] = p["signal"].map({name: i for i, name in enumerate(SIGNAL_ORDER)})
+    p = p.sort_values(
+        ["role", "_order", "hit_rate", "n_titles", "median_title_roi", "person_id"],
+        ascending=[True, True, False, False, False, True],
+    )
+    return p[SIGNAL_COLUMNS].reset_index(drop=True)

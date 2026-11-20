@@ -205,3 +205,106 @@ def test_no_rankable_bundle_gives_empty_entries_and_a_summary():
     s = summary.set_index("measure")
     assert s.loc["bundles tested", "value"] == 0
     assert pd.isna(s.loc["within-bundle median ratio, middle to opener", "value"])
+
+
+# --- talent signal ------------------------------------------------------------------
+
+LIST_MEDIAN = 4.0  # the fixtures below put films clearly above (8) or below (2) this
+
+
+def standalone_films(rois):
+    """Standalone films 1..n with the given multiples."""
+    return [{"tmdb_id": i + 1, "title": f"S{i + 1}", **money(r)} for i, r in enumerate(rois)]
+
+
+def signal_for(film_rows, talent_rows, list_median=LIST_MEDIAN, list_votes=1000.0):
+    f = flagged(film_rows)
+    return rank.talent_signal(make_talent(talent_rows), f, list_median, list_votes).set_index("person_id")
+
+
+def test_each_collection_counts_once_per_person():
+    rows = bundle_rows(5, [8, 8, 8]) + [{"tmdb_id": 10, "title": "solo", **money(2)}]
+    talent = [(1, 7, "Ann", "lead_actor"), (2, 7, "Ann", "lead_actor"), (3, 7, "Ann", "lead_actor"),
+              (10, 7, "Ann", "lead_actor")]
+    s = signal_for(rows, talent).loc[7]
+    assert s["n_films"] == 4 and s["n_titles"] == 2 and s["largest_unit_films"] == 3
+    assert s["titles_above"] == 1 and s["hit_rate"] == 0.5
+    assert s["signal"] == "too little evidence"  # three films, but only two independent titles
+
+
+def test_two_thirds_counts_as_reliable():
+    f = standalone_films([8, 8, 2])  # 2 of 3 titles above 4
+    t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
+    s = signal_for(f, t).loc[1]
+    assert s["n_titles"] == 3 and s["titles_above"] == 2 and s["signal"] == "reliable"
+
+
+def test_float_edge_holds_for_larger_groups():
+    f = standalone_films([8] * 6 + [2] * 3)  # 6 of 9 = two thirds exactly
+    t = [(i, 1, "Ann", "director") for i in range(1, 10)]
+    assert signal_for(f, t).loc[1, "signal"] == "reliable"
+
+
+def test_negative_and_mixed():
+    f = standalone_films([2, 2, 2, 8, 8, 2, 2])
+    t = [(1, 1, "Neg", "director"), (2, 1, "Neg", "director"), (3, 1, "Neg", "director"),
+         (4, 2, "Mix", "director"), (5, 2, "Mix", "director"), (6, 2, "Mix", "director"), (7, 2, "Mix", "director")]
+    s = signal_for(f, t)
+    assert s.loc[1, "signal"] == "reliable negative" and s.loc[1, "titles_above"] == 0
+    assert s.loc[2, "signal"] == "mixed" and s.loc[2, "n_titles"] == 4 and s.loc[2, "titles_above"] == 2
+
+
+def test_promising_needs_two_titles_both_above():
+    f = standalone_films([8, 8, 8, 2])
+    t = [(1, 1, "Both", "director"), (2, 1, "Both", "director"),
+         (3, 2, "Split", "director"), (4, 2, "Split", "director"),
+         (1, 3, "One", "director")]
+    s = signal_for(f, t)
+    assert s.loc[1, "signal"] == "promising, too little evidence"
+    assert s.loc[2, "signal"] == "too little evidence"
+    assert s.loc[3, "signal"] == "too little evidence"
+
+
+def test_director_and_lead_actor_are_separate_rows():
+    f = standalone_films([8, 8, 8])
+    t = [(i, 1, "Ann", "director") for i in (1, 2, 3)] + [(i, 1, "Ann", "lead_actor") for i in (1, 2)]
+    sig = rank.talent_signal(make_talent(t), flagged(f), LIST_MEDIAN, 1000.0)
+    assert len(sig) == 2 and set(sig["role"]) == {"director", "lead_actor"}
+    by = sig.set_index("role")
+    assert by.loc["director", "n_titles"] == 3 and by.loc["lead_actor", "n_titles"] == 2
+
+
+def test_unusable_films_are_not_titles_but_still_count_as_films():
+    rows = standalone_films([8, 8, 8])
+    rows[2] = {**rows[2], "budget": 0}
+    t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
+    s = signal_for(rows, t).loc[1]
+    assert s["n_films"] == 3 and s["n_titles"] == 2
+
+
+def test_vote_hit_rate_sits_beside_the_multiple_hit_rate():
+    rows = [{"tmdb_id": 1, "title": "a", "votes": 5000, **money(2)}, {"tmdb_id": 2, "title": "b", "votes": 5000, **money(2)},
+            {"tmdb_id": 3, "title": "c", "votes": 10, **money(8)}]
+    t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
+    s = signal_for(rows, t).loc[1]
+    assert s["titles_above"] == 1 and s["vote_titles_above"] == 2 and s["vote_hit_rate"] == pytest.approx(2 / 3)
+    assert s["signal"] == "reliable negative"  # 1 of 3 sits exactly on the negative edge (1 - 2/3)
+
+
+def test_signal_rows_are_ordered_by_role_signal_then_hit_rate():
+    f = standalone_films([8, 8, 8, 2, 2, 2])
+    t = [(1, 1, "Weak", "director"), (2, 1, "Weak", "director"), (3, 1, "Weak", "director")]  # 3 of 3 above
+    t += [(4, 2, "Neg", "director"), (5, 2, "Neg", "director"), (6, 2, "Neg", "director")]
+    t += [(1, 3, "Once", "director")]
+    sig = rank.talent_signal(make_talent(t), flagged(f), LIST_MEDIAN, 1000.0)
+    assert list(sig["name"]) == ["Weak", "Neg", "Once"]
+    assert list(sig["signal"]) == ["reliable", "reliable negative", "too little evidence"]
+
+
+def test_talent_join_keeps_every_row_and_flags_a_repeated_film_id():
+    f = flagged(standalone_films([8, 8]))
+    talent = make_talent([(1, 1, "A", "director"), (2, 1, "A", "director")])
+    assert rank.talent_join_rows(talent, f) == (2, True)
+    doubled = pd.concat([f, f.iloc[[0]]], ignore_index=True)
+    rows, unique = rank.talent_join_rows(talent, doubled)
+    assert rows == 3 and not unique  # the join would add a row: C-29 stops the run
