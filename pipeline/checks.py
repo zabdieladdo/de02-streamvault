@@ -105,7 +105,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
 # are written). Every other check is recorded in checks_report.csv and the run continues.
-INTEGRITY_CHECKS = ("C-ROI", "C-22", "C-23", "C-25")
+INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25")
 
 
 def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:

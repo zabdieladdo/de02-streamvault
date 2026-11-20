@@ -400,3 +400,18 @@ def test_full_run_keeps_the_limited_folder(env):
     marker = {p.name: p.read_bytes() for p in (out / "limited").glob("*")}
     run_pipeline.main([], session=fake())
     assert {p.name for p in (out / "limited").glob("*")} == set(marker)
+
+
+def test_c21_failure_stops_the_run(env, capsys, monkeypatch):
+    real = run_pipeline.metrics.window_kpis
+
+    def missing_group_size(films):
+        a, b = real(films)
+        a = a.astype({"n_films": "float64"})
+        a.loc[0, "n_films"] = float("nan")  # a measure row without its group size
+        return a, b
+
+    monkeypatch.setattr(run_pipeline.metrics, "window_kpis", missing_group_size)
+    _stops_on(env, capsys, "C-21", STAGE5_FILES)
+    status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
+    assert status.startswith("stopped at C-21, stage 5, ")
