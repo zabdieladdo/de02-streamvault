@@ -150,7 +150,7 @@ def test_live_fetch_returns_details_and_credits_for_each_film(fetch_env):
 def test_live_fetch_leaves_the_snapshot_and_the_fetch_log_byte_identical(fetch_env, monkeypatch):
     fetch.fetch_all(make_ids(603, 155), session=FakeSession(), key=TEST_KEY)  # the snapshot being checked
     before = tree_hash(config.RAW_DIR)
-    assert any(name.endswith("fetch_log.csv") for name in before) and len(before) == 5
+    assert any(name.endswith("fetch_log.csv") for name in before) and len(before) == 7  # 4 files, the log, 2 snapshots
 
     def forbidden(*args, **kwargs):
         raise AssertionError("the spot-check must never write the snapshot")
@@ -661,9 +661,21 @@ def test_no_key_stops_the_command_before_any_request(pipeline_env, monkeypatch, 
     assert "TMDB_API_KEY not set" in capsys.readouterr().out and session.calls == []
 
 
+def pin_selection_to_film_155():
+    """Make film 155 the slowest response in the fetch log, so it is the only film the spot-check picks.
+
+    Otherwise the choice of film for the nearly-failed slice follows the real response times of the
+    test's own run and film 603 is sometimes picked as well.
+    """
+    log = pd.read_csv(config.FETCH_LOG)
+    log.loc[log["tmdb_id"] == 155, "elapsed_s"] = 99.0
+    log.to_csv(config.FETCH_LOG, index=False)
+
+
 def test_the_key_appears_in_no_output_not_even_when_a_request_fails(pipeline_env, capsys):
     capsys.readouterr()
     err = requests.ConnectionError(f"failed: {config.API_BASE}/movie/155?api_key={TEST_KEY}")
+    pin_selection_to_film_155()
     down = FakeSession({"/movie/155": err, "/movie/155/credits": err})
     assert command.main(session=down) == 0  # two failed requests are not enough to stop; the fields are unverified
     table = pd.read_csv(pipeline_env.tmp_path / "out" / "spotcheck.csv", keep_default_na=False)

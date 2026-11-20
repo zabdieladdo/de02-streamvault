@@ -33,5 +33,6 @@ Snapshot of 20 Nov 2026. Source: `GET /movie/{id}` (details) and `GET /movie/{id
 
 - Saved responses expire after 180 days (TMDb terms, 1.C; ADR-008).
 - Saved responses and outputs are not committed or shared (TMDb terms, 1.C; ADR-004).
+- The flatten stage reads the two snapshot files `data/raw/snapshot_movie.jsonl` and `data/raw/snapshot_credits.jsonl`, built from the per-film files and rebuilt when they no longer match the fetch log (ADR-030); they are a second copy of the same data, with the same 180-day rule and the same limits on sharing.
 - Any product built on it shows TMDb's notice (README).
 - Reading `films.csv` back: blanks in text columns become missing, except `release_date_raw`, which stays text. Use `read_films()` rather than a plain read.

@@ -6,10 +6,21 @@ from pipeline.errors import PipelineStopError
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
-INPUT_IDS = REPO_ROOT / "data" / "input" / "id_list.csv"
-OUT_DIR = REPO_ROOT / "out"
+
+def _from_environment(name: str, default: Path) -> Path:
+    """A folder or file taken from an environment variable when it is set and not empty, else the default.
+
+    Measurement runs use this to work on copies and on synthetic data without touching the real
+    snapshot or outputs. Normal runs set none of the variables.
+    """
+    value = os.environ.get(name, "").strip()
+    return Path(value).expanduser() if value else default
+
+
+INPUT_IDS = _from_environment("STREAMVAULT_INPUT_IDS", REPO_ROOT / "data" / "input" / "id_list.csv")
+OUT_DIR = _from_environment("STREAMVAULT_OUT_DIR", REPO_ROOT / "out")
 LIMITED_OUT_DIR = OUT_DIR / "limited"  # --limit runs write here, never over full results
-RAW_DIR = REPO_ROOT / "data" / "raw"  # unused until the fetch stage
+RAW_DIR = _from_environment("STREAMVAULT_RAW_DIR", REPO_ROOT / "data" / "raw")
 
 EXPECTED_HEADER = "tmdb_id"
 
