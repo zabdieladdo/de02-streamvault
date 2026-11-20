@@ -32,6 +32,7 @@ def test_main_end_to_end(env, capsys):
     for name in (
         "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv",
         "reconciliation.csv", "checks_report.csv", "run_log.jsonl",
+        "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
     ):
         assert (out / name).is_file(), name
     lines = (out / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
@@ -42,12 +43,14 @@ def test_main_end_to_end(env, capsys):
     assert record["fetch_network_calls"] == 5  # 155 x2, 603 x2, 9412887 details only
     assert record["ids_fetched"] == 2
     assert record["checks_failed"] == 0
+    assert record["films_rows"] == 2 and record["talent_rows"] == 0
     assert record["analysis_incomplete"] is False
     assert record["stopped"] is None
 
     recon = pd.read_csv(out / "reconciliation.csv")
     assert recon["rows"].iloc[0] == 8
-    assert recon["stage"].iloc[-1] == "Fetched with details and credits"
+    assert recon["stage"].iloc[-1] == "In the analysis table (one row per film)"
+    assert "Fetched with details and credits" in set(recon["stage"])
     assert recon["rows"].iloc[-1] == 2
     sent = recon[recon["stage"] == "Sent to the API stage"]["rows"].iloc[0]
     assert sent == 3
@@ -60,6 +63,7 @@ def test_main_end_to_end(env, capsys):
 
     text = capsys.readouterr().out
     assert "Stage 2: fetch details and credits" in text
+    assert "Stage 3: flatten and join" in text
     assert TEST_KEY not in text
 
 
@@ -131,6 +135,7 @@ def test_main_returns_1_on_bad_header(write_ids, fetch_env, monkeypatch, capsys)
 
 CSV_OUTPUTS = (
     "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv", "reconciliation.csv", "checks_report.csv",
+    "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
 )
 
 
