@@ -1,5 +1,6 @@
 """End-to-end tests of stages 1 and 2 against fixture files and a fake session."""
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -49,9 +50,12 @@ def test_main_end_to_end(env, capsys):
 
     recon = pd.read_csv(out / "reconciliation.csv")
     assert recon["rows"].iloc[0] == 8
-    assert recon["stage"].iloc[-1] == "In the analysis table (one row per film)"
+    assert recon["stage"].iloc[-1].startswith("Films with a usable revenue")
+    assert recon["stage"].iloc[-2] == "In the analysis table (one row per film)"
     assert "Fetched with details and credits" in set(recon["stage"])
-    assert recon["rows"].iloc[-1] == 2
+    assert recon["rows"].iloc[-2] == 2
+    assert record["roi_usable"] == 0 and "windows_disagree" in record
+    assert {"clean", "measure"} <= set(record["seconds"])
     sent = recon[recon["stage"] == "Sent to the API stage"]["rows"].iloc[0]
     assert sent == 3
     assert "Quarantined: not_found_on_api" in set(recon["stage"])
@@ -64,6 +68,7 @@ def test_main_end_to_end(env, capsys):
     text = capsys.readouterr().out
     assert "Stage 2: fetch details and credits" in text
     assert "Stage 3: flatten and join" in text
+    assert "Stage 4: clean and flag" in text and "Stage 5: measures" in text
     assert TEST_KEY not in text
 
 
@@ -96,7 +101,7 @@ def test_limit_run_is_marked(env, capsys):
     assert last.endswith("/ unchanged)")
     recon = pd.read_csv(env.tmp_path / "out" / "limited" / "reconciliation.csv")
     assert "Not processed (limited run)" in set(recon["stage"])
-    assert recon["rows"].iloc[-1] == 1
+    assert recon["rows"].iloc[-2] == 1
 
 
 def test_refresh_requests_again(env):
@@ -136,6 +141,7 @@ def test_main_returns_1_on_bad_header(write_ids, fetch_env, monkeypatch, capsys)
 CSV_OUTPUTS = (
     "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv", "reconciliation.csv", "checks_report.csv",
     "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
+    "films_clean.csv", "review_list.csv", "kpis.csv", "window_comparison.csv", "decision_impact.csv",
 )
 
 
@@ -155,7 +161,7 @@ def test_limited_run_writes_its_own_outputs(env):
     limited = env.tmp_path / "out" / "limited"
     assert {p.name for p in limited.glob("*.csv")} == set(CSV_OUTPUTS)
     recon = pd.read_csv(limited / "reconciliation.csv")
-    assert recon["rows"].iloc[-1] == 1  # one id fetched
+    assert recon["rows"].iloc[-2] == 1  # one id fetched
 
 
 def test_run_log_records_both_runs_and_output_dir(env):
@@ -165,3 +171,47 @@ def test_run_log_records_both_runs_and_output_dir(env):
     full, limited = (json.loads(x) for x in lines)
     assert full["limit"] is None and full["output_dir"] == str(env.tmp_path / "out")
     assert limited["limit"] == 1 and limited["output_dir"].endswith("limited")
+
+
+KPI_FILES = ("kpis.csv", "window_comparison.csv", "decision_impact.csv", "films_clean.csv", "review_list.csv")
+
+
+def test_stages_4_and_5_write_identical_files_on_a_second_run(env):
+    out = env.tmp_path / "out"
+    run_pipeline.main([], session=fake())
+    first = {n: (out / n).read_bytes() for n in KPI_FILES}
+    assert run_pipeline.main([], session=FakeSession()) == 0
+    assert {n: (out / n).read_bytes() for n in KPI_FILES} == first
+    checks = pd.read_csv(out / "checks_report.csv").set_index("check_id")
+    assert checks.loc["C-25", "passed"]
+
+
+def test_new_outputs_have_the_expected_shape(env):
+    from pipeline import load
+    run_pipeline.main([], session=fake())
+    out = env.tmp_path / "out"
+    films = load.read_films_clean(out / "films_clean.csv")
+    assert len(films) == len(load.read_films(out / "films.csv"))  # no row leaves at stage 4
+    kpis = pd.read_csv(out / "kpis.csv")
+    assert len(kpis) == 4 and set(kpis["window"]) == {"all years", "2000 onward"}
+    impact = pd.read_csv(out / "decision_impact.csv")
+    assert len(impact) == 2 * 10
+
+
+def test_windows_disagree_prints_a_banner_and_the_run_continues(capsys, tmp_path):
+    from pipeline import clean
+    from tests.conftest import make_films
+    rows = [{"year": 1990, "franchise": True, "budget": 1_000_000, "revenue": 10_000_000}] * 2 + [
+        {"year": 2005, "franchise": True, "budget": 1_000_000, "revenue": 2_000_000},
+        {"year": 2006, "franchise": False, "budget": 1_000_000, "revenue": 5_000_000},
+    ]
+    films = make_films(rows).assign(imdb_id=pd.Series(pd.NA, dtype="string"))
+    stage4 = {
+        "films_clean": clean.add_flags(films), "films": films, "report": pd.DataFrame(),
+        "quarantine": pd.DataFrame({"stage": [], "reason_code": [], "raw_value": []}),
+    }
+    record = {"seconds": {"clean": 0.0}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage5(stage4, SimpleNamespace(limit=None), record, tmp_path)  # does not raise
+    text = capsys.readouterr().out
+    assert "WINDOWS DISAGREE: median_roi" in text
+    assert record["windows_disagree"] is True and "median_roi" in record["windows_disagree_measures"]

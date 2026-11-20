@@ -5,6 +5,7 @@ import pandas as pd
 from pipeline import config
 
 GROUPS = ("franchise", "standalone")
+ALL_YEARS, FROM_2000 = "all years", "2000 onward"
 KPI_COLUMNS = [
     "window", "group", "n_films", "n_roi_usable", "median_roi", "mean_roi",
     "median_roi_without_top", "shift_without_top", "top_film_title", "top_film_roi",
@@ -61,6 +62,14 @@ def group_kpis(films_clean: pd.DataFrame, window_name: str) -> pd.DataFrame:
     return kpis[KPI_COLUMNS]
 
 
+def window_kpis(films_clean: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The two KPI tables, both from group_kpis: all years, and films released in 2000 or later."""
+    return (
+        group_kpis(films_clean, ALL_YEARS),
+        group_kpis(films_clean[films_clean["in_window_2000"]], FROM_2000),
+    )
+
+
 MEASURES = ("median_roi", "mean_roi", "aggregate_roi", "median_vote_count")
 COMPARISON_COLUMNS = [
     "measure", "leader_all_years", "leader_2000_onward", "agree", "gap_all_years", "gap_2000_onward",
@@ -97,14 +106,21 @@ def compare_windows(kpis_all: pd.DataFrame, kpis_2000: pd.DataFrame) -> pd.DataF
 
 
 def disagreeing_measures(comparison: pd.DataFrame) -> list[str]:
-    return comparison.loc[~comparison["agree"], "measure"].tolist()
+    """Measures where both windows have a leader and the leaders differ."""
+    both = (comparison["leader_all_years"] != "") & (comparison["leader_2000_onward"] != "")
+    return comparison.loc[both & ~comparison["agree"], "measure"].tolist()
+
+
+def incomparable_measures(comparison: pd.DataFrame) -> list[str]:
+    """Measures where a window has no leader because a group has no usable films."""
+    blank = (comparison["leader_all_years"] == "") | (comparison["leader_2000_onward"] == "")
+    return comparison.loc[blank, "measure"].tolist()
 
 
 IMPACT_COLUMNS = [
     "decision", "variant", "window", "films_affected", "franchise_n", "franchise_median_roi",
     "standalone_n", "standalone_median_roi", "gap", "leader", "leader_changes",
 ]
-ALL_YEARS, FROM_2000 = "all years", "2000 onward"
 
 
 def _windows(films: pd.DataFrame):
