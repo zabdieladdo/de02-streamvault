@@ -352,7 +352,9 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         recent_text = np.where(
             recent.notna(), _times(recent.fillna(0)) + " from 2000 onward", "no films from 2000 onward"
         )
-        reason = head + pd.Series(recent_text, index=fr.index) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes."
+        reason = (
+            head + pd.Series(recent_text, index=fr.index) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes."
+        )
     parts.append(
         pd.DataFrame(
             {
@@ -401,7 +403,8 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         standalone_rows(
             top, "standalone",
             prefix + _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of "
-            + str(n_stand) + " standalones" + scope + vs_median(top["roi"]) + "); released " + top["release_years"] + "; "
+            + str(n_stand) + " standalones" + scope + vs_median(top["roi"]) + "); released "
+            + top["release_years"] + "; "
             + _ordinal(top["vote_rank"]) + " of " + str(n_stand) + " by audience votes.",
         )
     )

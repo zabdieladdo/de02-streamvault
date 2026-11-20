@@ -2,7 +2,7 @@
 import argparse
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -38,7 +38,7 @@ def _parse_args(argv):
 
 def _stage1(record: dict, out_dir: Path) -> dict:
     t0 = time.perf_counter()
-    run_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_at = datetime.now(UTC).isoformat(timespec="seconds")
 
     raw, meta = extract.read_id_file(config.INPUT_IDS)
     ids_to_fetch, quarantine = validate.classify_ids(raw, run_at=run_at)
@@ -506,7 +506,7 @@ def _clear_old_outputs(out_dir: Path) -> None:
 
 
 def _write_status(out_dir: Path, stopped_at: str | None, stage: int) -> None:
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    now = datetime.now(UTC).isoformat(timespec="seconds")
     text = "complete " + now if stopped_at is None else f"stopped at {stopped_at}, stage {stage}, {now}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / STATUS_FILE).write_text(text + chr(10), encoding="utf-8")

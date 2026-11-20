@@ -219,7 +219,11 @@ def profile_films(films: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for col in films.columns:
         s = films[col]
-        is_num = pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)             and str(s.dtype) != "boolean"
+        is_num = (
+            pd.api.types.is_numeric_dtype(s)
+            and not pd.api.types.is_bool_dtype(s)
+            and str(s.dtype) != "boolean"
+        )
         is_date = pd.api.types.is_datetime64_any_dtype(s)
         top = s.value_counts(dropna=True).head(3)
         rows.append(
@@ -228,7 +232,9 @@ def profile_films(films: pd.DataFrame) -> pd.DataFrame:
                 "dtype": str(s.dtype),
                 "n_rows": len(s),
                 "n_null": int(s.isna().sum()),
-                "n_empty_string": int((s == "").sum()) if s.dtype == object or str(s.dtype) in ("string", "str") else "",
+                "n_empty_string": (
+                    int((s == "").sum()) if s.dtype == object or str(s.dtype) in ("string", "str") else ""
+                ),
                 "n_zero": int((s == 0).sum()) if is_num else "",
                 "n_distinct": int(s.nunique(dropna=True)),
                 "top_3": "; ".join(f"{v} ({n})" for v, n in top.items()),

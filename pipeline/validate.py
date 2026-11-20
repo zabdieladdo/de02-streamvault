@@ -1,5 +1,5 @@
 """Quarantine rules: reject bad rows with a reason and the stage that caught them."""
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -26,7 +26,7 @@ def classify_ids(
     raw: pd.DataFrame, run_at: str | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Give every raw row exactly one class; return (ids_to_fetch, quarantine)."""
-    run_at = run_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_at = run_at or datetime.now(UTC).isoformat(timespec="seconds")
 
     df = raw.sort_values("line_number").reset_index(drop=True)
     raw_value = df["raw_value"].astype(str)

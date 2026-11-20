@@ -182,7 +182,7 @@ def test_decisions_that_affect_nothing_keep_their_row():
     for d in ("zero money", "unreleased excluded", "likely units errors"):
         assert pick(t, d)["films_affected"] == 0
         assert pick(t, d, window="2000 onward")["films_affected"] == 0
-    assert pick(t, "baseline")["leader_changes"] == False  # noqa: E712
+    assert pick(t, "baseline")["leader_changes"] == False
 
 
 def test_repeats_kept_adds_one_row_per_repeat():

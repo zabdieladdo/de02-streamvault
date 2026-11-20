@@ -1,7 +1,7 @@
 """Stages 3-5: flatten JSON, join films to credits with validate=, and set per-metric flags."""
 import json
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ def read_saved_responses(fetched_ids: pd.DataFrame, run_at: str | None = None):
     Returns (details_list, credits_list, flatten_quarantine). A film whose file is missing,
     not valid JSON, or for another id goes to quarantine and is in neither list.
     """
-    run_at = run_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    run_at = run_at or datetime.now(UTC).isoformat(timespec="seconds")
     ids = fetched_ids.sort_values("first_line_number")
     details_list, credits_list, bad = [], [], []
 
@@ -86,7 +86,10 @@ def _list_stats(col: pd.Series) -> pd.DataFrame:
         {
             "count": count.astype("Int64"),
             "first": names.groupby(level=0).first().reindex(col.index).astype("string"),
-            "joined": names.astype(str).groupby(level=0).agg("|".join).reindex(col.index).astype("string"),
+            "joined": (
+                names.astype(str).groupby(level=0).agg(joined="|".join)["joined"]
+                .reindex(col.index).astype("string")
+            ),
         }
     )
 
@@ -252,8 +255,8 @@ def prove_join(left, right, on, how, validate, name):
         "right_key_unique": bool(right[on].is_unique),
         "result_rows": len(merged),
         "both": int((status == "both").sum()),
-        "left_only": int(len(left_only)),
-        "right_only": int(len(right_only)),
+        "left_only": len(left_only),
+        "right_only": len(right_only),
         "validate": validate,
         "rows_changed": len(merged) != len(left),
         "unmatched_keys": ",".join(unmatched),

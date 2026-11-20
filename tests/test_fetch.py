@@ -1,5 +1,5 @@
 """Tests for the fetch stage. No network: a FakeSession returns scripted responses."""
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pandas as pd
 import pytest
@@ -50,7 +50,7 @@ def age_log(days, **match):
     mask = pd.Series(True, index=log.index)
     for col, val in match.items():
         mask &= log[col] == str(val)
-    old = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    old = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
     log.loc[mask, "fetched_at"] = old
     log.to_csv(config.FETCH_LOG, index=False)
 

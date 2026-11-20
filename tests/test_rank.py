@@ -7,7 +7,7 @@ from tests.conftest import make_films, make_talent
 
 
 def money(roi):
-    return {"budget": 1_000_000, "revenue": int(round(roi * 1_000_000))}
+    return {"budget": 1_000_000, "revenue": round(roi * 1_000_000)}
 
 
 def flagged(rows):
@@ -103,7 +103,9 @@ def test_bundle_conservation():
 
 
 def test_relative_value_and_walkaway_are_ratios_to_the_list_median():
-    rows = bundle_rows(1, [2, 4, 8]) + [{"title": "s", **money(2)}, {"title": "t", **money(4)}, {"title": "u", **money(6)}]
+    rows = bundle_rows(1, [2, 4, 8]) + [
+        {"title": "s", **money(2)}, {"title": "t", **money(4)}, {"title": "u", **money(6)},
+    ]
     f = flagged(rows)
     ref = rank.reference_values(f)
     b = rank.build_bundles(f).set_index("collection_id").loc[1]
@@ -177,7 +179,10 @@ def test_unusable_film_is_left_out_of_the_positions():
 
 def test_a_long_series_cannot_outweigh_a_short_one():
     x = [{"tmdb_id": 1, "title": "x-open", "franchise": 1, "date": "2000-01-01", **money(4)}]
-    x += [{"tmdb_id": 2 + i, "title": f"x-mid{i}", "franchise": 1, "date": f"200{1 + i}-01-01", **money(2)} for i in range(5)]
+    x += [
+        {"tmdb_id": 2 + i, "title": f"x-mid{i}", "franchise": 1, "date": f"200{1 + i}-01-01", **money(2)}
+        for i in range(5)
+    ]
     x += [{"tmdb_id": 8, "title": "x-last", "franchise": 1, "date": "2010-01-01", **money(4)}]
     y = [{"tmdb_id": 11, "title": "y-open", "franchise": 2, "date": "2000-01-01", **money(2)},
          {"tmdb_id": 12, "title": "y-mid", "franchise": 2, "date": "2003-01-01", **money(4)},
@@ -189,7 +194,7 @@ def test_a_long_series_cannot_outweigh_a_short_one():
     assert s.loc["bundles where middle entries trail the opener", "value"] == 1
     assert s.loc["share of bundles where middle entries trail the opener", "value"] == 0.5
     assert s.loc["pooled median multiple: middle", "value"] == 2  # display only
-    assert s.loc["within-bundle median ratio, latest to opener", "value"] == 1.0  # both latest films equal their openers
+    assert s.loc["within-bundle median ratio, latest to opener", "value"] == 1.0  # latest equals opener
 
 
 def test_summary_carries_the_opener_bias_note():
@@ -282,8 +287,11 @@ def test_unusable_films_are_not_titles_but_still_count_as_films():
 
 
 def test_vote_hit_rate_sits_beside_the_multiple_hit_rate():
-    rows = [{"tmdb_id": 1, "title": "a", "votes": 5000, **money(2)}, {"tmdb_id": 2, "title": "b", "votes": 5000, **money(2)},
-            {"tmdb_id": 3, "title": "c", "votes": 10, **money(8)}]
+    rows = [
+        {"tmdb_id": 1, "title": "a", "votes": 5000, **money(2)},
+        {"tmdb_id": 2, "title": "b", "votes": 5000, **money(2)},
+        {"tmdb_id": 3, "title": "c", "votes": 10, **money(8)},
+    ]
     t = [(1, 1, "Ann", "director"), (2, 1, "Ann", "director"), (3, 1, "Ann", "director")]
     s = signal_for(rows, t).loc[1]
     assert s["titles_above"] == 1 and s["vote_titles_above"] == 2 and s["vote_hit_rate"] == pytest.approx(2 / 3)
@@ -297,7 +305,9 @@ def test_signal_rows_are_ordered_by_role_signal_then_hit_rate():
     t += [(1, 3, "Once", "director")]
     sig = rank.talent_signal(make_talent(t), flagged(f), LIST_MEDIAN, 1000.0)
     assert list(sig["name"]) == ["Weak", "Neg", "Once"]
-    assert list(sig["signal"]) == ["consistently above on return", "consistently below on return", "too little evidence"]
+    assert list(sig["signal"]) == [
+        "consistently above on return", "consistently below on return", "too little evidence",
+    ]
 
 
 def test_talent_join_keeps_every_row_and_flags_a_repeated_film_id():
@@ -393,7 +403,10 @@ def test_ordinals_handle_the_teens():
 
 
 def test_tied_multiples_rank_by_votes():
-    rows = [{"tmdb_id": 1, "title": "few", "votes": 10, **money(5)}, {"tmdb_id": 2, "title": "many", "votes": 90, **money(5)}]
+    rows = [
+        {"tmdb_id": 1, "title": "few", "votes": 10, **money(5)},
+        {"tmdb_id": 2, "title": "many", "votes": 90, **money(5)},
+    ]
     f = flagged(rows)
     sl = rank.build_shortlist(rank.build_bundles(f), f)
     assert list(sl["name"]) == ["many", "few"]
@@ -422,7 +435,9 @@ def deal_for(rows):
 def test_deal_note_ratios_equal_hand_computed_values():
     # list: bundle 1 (4, 8, 12) and standalones 2, 4, 6 -> list median of 6 films is (4 + 6) / 2 = 5
     rows = bundle_rows(1, [4, 8, 12], years=[2001, 2004, 2010]) + [
-        {"tmdb_id": 50, "title": "a", **money(2)}, {"tmdb_id": 51, "title": "b", **money(4)}, {"tmdb_id": 52, "title": "c", **money(6)}]
+        {"tmdb_id": 50, "title": "a", **money(2)}, {"tmdb_id": 51, "title": "b", **money(4)},
+        {"tmdb_id": 52, "title": "c", **money(6)},
+    ]
     dn, ref = deal_for(rows)
     r = dn.loc["robust candidate"]
     assert ref["list_median_roi"] == 5
@@ -442,7 +457,8 @@ def test_one_bundle_leading_both_windows_appears_in_all_three_rows():
 def test_the_candidates_can_be_three_different_rules_over_different_bundles():
     f = window_fixture()
     b = rank.build_bundles(f)
-    dn = rank.deal_note_figures(b, pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0, 5.0).set_index("candidate")
+    no_kpis = pd.DataFrame(columns=["window", "group", "median_roi"])
+    dn = rank.deal_note_figures(b, no_kpis, 5.0, 5.0).set_index("candidate")
     assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
     # both bundles have a worse-of-two rank of 2; bundle 2 wins on the higher walk-away (6 against 2)
     assert dn.loc["robust candidate", "collection_id"] == 2
@@ -450,13 +466,16 @@ def test_the_candidates_can_be_three_different_rules_over_different_bundles():
 
 
 def test_robust_candidate_minimises_the_worse_of_the_two_ranks():
-    rows = (bundle_rows(1, [20, 20, 20], years=[1980, 1990, 2001], base_id=0)        # best overall, only one film from 2000
-            + bundle_rows(2, [9, 9, 9], years=[2001, 2004, 2008], base_id=10)        # rankable in both windows
-            + bundle_rows(3, [8, 8, 8], years=[2001, 2004, 2008], base_id=20)        # rankable in both windows, lower
-            + bundle_rows(4, [10, 10, 10], years=[1985, 2002, 2004], base_id=30))    # strong overall, only two films from 2000
+    rows = (
+        bundle_rows(1, [20, 20, 20], years=[1980, 1990, 2001], base_id=0)  # best overall, one film from 2000
+        + bundle_rows(2, [9, 9, 9], years=[2001, 2004, 2008], base_id=10)  # rankable in both windows
+        + bundle_rows(3, [8, 8, 8], years=[2001, 2004, 2008], base_id=20)  # rankable in both windows, lower
+        + bundle_rows(4, [10, 10, 10], years=[1985, 2002, 2004], base_id=30)  # strong overall, two films from 2000
+    )
     b = rank.build_bundles(flagged(rows)).set_index("collection_id")
     assert not b.loc[1, "rankable_2000_on"] and not b.loc[4, "rankable_2000_on"]
-    dn = rank.deal_note_figures(b.reset_index(), pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0, 5.0).set_index("candidate")
+    no_kpis = pd.DataFrame(columns=["window", "group", "median_roi"])
+    dn = rank.deal_note_figures(b.reset_index(), no_kpis, 5.0, 5.0).set_index("candidate")
     assert dn.loc["robust candidate", "collection_id"] == 2
     assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
 
@@ -635,7 +654,9 @@ def test_bundle_ratios_for_films_from_2000_are_exact():
 
 
 def test_2000_onward_ratios_are_missing_when_no_usable_film_is_from_2000():
-    rows = bundle_rows(1, [4, 8, 12], years=[1980, 1985, 1990]) + [{"tmdb_id": 50, "title": "a", "year": 2005, **money(3)}]
+    rows = bundle_rows(1, [4, 8, 12], years=[1980, 1985, 1990]) + [
+        {"tmdb_id": 50, "title": "a", "year": 2005, **money(3)},
+    ]
     b = rank.build_bundles(flagged(rows)).set_index("collection_id").loc[1]
     for col in ("median_roi_2000_on", "weakest_roi_2000_on", "weakest_title_2000_on", "relative_value_2000_on",
                 "walkaway_ratio_2000_on"):
@@ -711,7 +732,10 @@ def test_talent_signal_says_it_is_an_all_years_measure():
 
 def test_each_pooled_median_shows_its_film_count():
     x = [{"tmdb_id": 1, "title": "x-open", "franchise": 1, "date": "2000-01-01", **money(4)}]
-    x += [{"tmdb_id": 2 + i, "title": f"x-mid{i}", "franchise": 1, "date": f"200{1 + i}-01-01", **money(2)} for i in range(5)]
+    x += [
+        {"tmdb_id": 2 + i, "title": f"x-mid{i}", "franchise": 1, "date": f"200{1 + i}-01-01", **money(2)}
+        for i in range(5)
+    ]
     x += [{"tmdb_id": 8, "title": "x-last", "franchise": 1, "date": "2010-01-01", **money(4)}]
     y = [{"tmdb_id": 11, "title": "y-open", "franchise": 2, "date": "2000-01-01", **money(2)},
          {"tmdb_id": 12, "title": "y-mid", "franchise": 2, "date": "2003-01-01", **money(4)},

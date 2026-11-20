@@ -2,7 +2,7 @@
 import os
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -102,7 +102,7 @@ class RateLimiter:
 # --- helpers ---------------------------------------------------------------
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _age_days(iso: str, now: datetime) -> float | None:
@@ -111,7 +111,7 @@ def _age_days(iso: str, now: datetime) -> float | None:
     except (TypeError, ValueError):
         return None
     if then.tzinfo is None:
-        then = then.replace(tzinfo=timezone.utc)
+        then = then.replace(tzinfo=UTC)
     return (now - then).total_seconds() / 86400
 
 
@@ -239,7 +239,7 @@ def fetch_all(
     if limit is not None:
         ids = ids.head(limit)
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     log = read_fetch_log()
     limiter = RateLimiter(config.REQUESTS_PER_SECOND)
     state = {
@@ -281,7 +281,7 @@ def fetch_all(
             fetched_at = entry["fetched_at"]
             age = _age_days(fetched_at, now)
         else:  # file with no log entry: trust its modification time
-            mtime = datetime.fromtimestamp(file.stat().st_mtime, timezone.utc)
+            mtime = datetime.fromtimestamp(file.stat().st_mtime, UTC)
             fetched_at = mtime.isoformat(timespec="seconds")
             age = (now - mtime).total_seconds() / 86400
         if age is None or age >= max_age:

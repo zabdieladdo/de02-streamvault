@@ -46,8 +46,8 @@ def test_row_count_mismatch_fails_c01(stage):
 
 
 # --- fetch-stage checks ---------------------------------------------------------
-from pipeline import config, fetch  # noqa: E402
-from tests.conftest import NOT_FOUND_BODY, FakeResponse, FakeSession  # noqa: E402
+from pipeline import config, fetch
+from tests.conftest import NOT_FOUND_BODY, FakeResponse, FakeSession
 
 
 def _fetch_run(fetch_env, script=None, n=3):
@@ -128,8 +128,10 @@ def _rank_tables(films=None):
     shortlist = rank.build_shortlists(bundles, f)
     kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
     deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"], ref["list_median_roi_2000_on"])
-    return dict(bundles=bundles, films_clean=f, entry_positions=ep, signal=signal, shortlist=shortlist,
-                deal_note=deal, talent=talent, ref=ref)
+    return {
+        "bundles": bundles, "films_clean": f, "entry_positions": ep, "signal": signal, "shortlist": shortlist,
+        "deal_note": deal, "talent": talent, "ref": ref,
+    }
 
 
 def _rank_report_for(tables):

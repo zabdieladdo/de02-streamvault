@@ -1,4 +1,6 @@
 """Run checks C-01 to C-27 and produce one pass/fail table."""
+from datetime import UTC
+
 import numpy as np
 import pandas as pd
 
@@ -260,10 +262,10 @@ def check_flatten_stage(run, load_quarantine: pd.DataFrame) -> pd.DataFrame:
 
 def check_clean_stage(films_clean: pd.DataFrame, as_of_year: int | None = None) -> pd.DataFrame:
     """Checks C-15 to C-20 and C-ROI for stage 4; same columns as the other checks."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     f = films_clean
-    year_limit = as_of_year or datetime.now(timezone.utc).year
+    year_limit = as_of_year or datetime.now(UTC).year
     rows = []
 
     def add(check_id, description, passed, detail):
@@ -450,7 +452,8 @@ def check_rank_stage(
     robust = deal_note[deal_note["candidate"] == "robust candidate"]
     both_windows = bundles["rankable"] & bundles["rankable_2000_on"]
     if robust.empty:
-        ok, detail = not both_windows.any(), f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
+        ok = not both_windows.any()
+        detail = f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
     else:
         row = bundles[bundles["collection_id"] == robust["collection_id"].iloc[0]]
         ok = bool(len(robust) == 1 and len(row) == 1 and both_windows[row.index].all())
