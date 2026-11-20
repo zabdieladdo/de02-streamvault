@@ -79,3 +79,58 @@ def test_same_function_serves_both_windows(monkeypatch):
     monkeypatch.setattr(config, "MIN_GROUP_FOR_CONCLUSION", 1)  # one change reaches both outputs
     assert metrics.group_kpis(films, "x").loc[0, "meets_min_group"]
     assert metrics.group_kpis(films[films["in_window_2000"]], "y").loc[0, "meets_min_group"]
+
+
+def windows_for(rows):
+    films = clean.add_flags(make_films(rows))
+    a = metrics.group_kpis(films, "all years")
+    b = metrics.group_kpis(films[films["in_window_2000"]], "2000 onward")
+    return films, a, b
+
+
+DISAGREE = [  # franchise leads on all years, standalone leads from 2000
+    {"year": 1990, "franchise": True, **money(10)}, {"year": 1991, "franchise": True, **money(10)},
+    {"year": 2005, "franchise": True, **money(2)},
+    {"year": 2006, "franchise": False, **money(5)},
+]
+
+
+def test_disagreement_is_detected():
+    _, a, b = windows_for(DISAGREE)
+    cmp = metrics.compare_windows(a, b)
+    row = cmp.set_index("measure").loc["median_roi"]
+    assert row["leader_all_years"] == "franchise" and row["leader_2000_onward"] == "standalone"
+    assert not row["agree"]
+    assert "median_roi" in metrics.disagreeing_measures(cmp)
+    assert row["gap_all_years"] == 5 and row["gap_2000_onward"] == -3
+
+
+def test_agreement():
+    _, a, b = windows_for([{"year": 2005, "franchise": True, **money(9)}, {"year": 2006, **money(2)}])
+    cmp = metrics.compare_windows(a, b)
+    assert cmp["agree"].all() and metrics.disagreeing_measures(cmp) == []
+    assert list(cmp["measure"]) == list(metrics.MEASURES)
+
+
+def test_incomparable_window_is_not_agreement():
+    _, a, b = windows_for([{"year": 1990, "franchise": True, **money(9)}, {"year": 1991, **money(2)}])
+    row = metrics.compare_windows(a, b).set_index("measure").loc["median_roi"]
+    assert row["leader_2000_onward"] == "" and not row["agree"]
+
+
+def test_measure_checks_pass_on_good_input():
+    from pipeline import checks
+    films, a, b = windows_for(DISAGREE)
+    report = checks.check_measure_stage(a, b, films, kpis_rerun=pd.concat([a, b], ignore_index=True))
+    assert report["passed"].all()
+    assert list(report["check_id"]) == ["C-21", "C-22", "C-23", "C-24", "C-25"]
+
+
+def test_measure_checks_catch_a_dropped_group_and_a_difference():
+    from pipeline import checks
+    films, a, b = windows_for(DISAGREE)
+    r = checks.check_measure_stage(a.iloc[:1], b, films).set_index("check_id")
+    assert not r.loc["C-22", "passed"]
+    changed = pd.concat([a, b], ignore_index=True).assign(n_films=99)
+    r2 = checks.check_measure_stage(a, b, films, kpis_rerun=changed).set_index("check_id")
+    assert not r2.loc["C-25", "passed"]

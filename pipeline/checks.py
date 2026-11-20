@@ -290,3 +290,51 @@ def check_clean_stage(films_clean: pd.DataFrame, as_of_year: int | None = None) 
         f"{mismatch} rows disagree with roi_usable; {n_inf} infinite values")
 
     return pd.DataFrame(rows)
+
+
+def check_measure_stage(
+    kpis_all: pd.DataFrame,
+    kpis_2000: pd.DataFrame,
+    films_clean: pd.DataFrame,
+    kpis_rerun: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Checks C-21 to C-25 for stage 5. `kpis_rerun` is the same table computed a second time."""
+    from pipeline.metrics import KPI_COLUMNS
+
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "measure",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    both = pd.concat([kpis_all, kpis_2000], ignore_index=True)
+    n_missing = int(both[["n_films", "n_roi_usable"]].isna().sum().sum())
+    add("C-21", "Every KPI row has n_films and n_roi_usable", n_missing == 0 and len(both) > 0,
+        f"{len(both)} KPI rows; {n_missing} missing counts")
+
+    in_window = int(films_clean["in_window_2000"].sum())
+    sums = {"all years": (int(kpis_all["n_films"].sum()), len(films_clean)),
+            "2000 onward": (int(kpis_2000["n_films"].sum()), in_window)}
+    bad = {w: v for w, v in sums.items() if v[0] != v[1]}
+    add("C-22", "Franchise plus standalone films equal the films in each window", not bad,
+        "; ".join(f"{w} {a} of {b}" for w, (a, b) in sums.items()))
+
+    a = kpis_all.set_index("group")["n_films"]
+    b = kpis_2000.set_index("group")["n_films"].reindex(a.index)
+    add("C-23", "2000-onward group sizes never exceed all-years sizes", bool((b <= a).all()),
+        "; ".join(f"{g} {b[g]} of {a[g]}" for g in a.index))
+
+    same_shape = list(kpis_all.columns) == KPI_COLUMNS and list(kpis_2000.columns) == KPI_COLUMNS
+    windows = (set(kpis_all["window"]), set(kpis_2000["window"]))
+    add("C-24", "Both windows come from group_kpis", same_shape and len(windows[0] | windows[1]) == 2,
+        f"windows {sorted(windows[0] | windows[1])}; columns match: {same_shape}")
+
+    if kpis_rerun is not None:
+        same = kpis_rerun.to_csv(index=False) == both.to_csv(index=False)
+        add("C-25", "A second computation gives identical KPI files", same,
+            "identical" if same else "the two runs differ")
+    return pd.DataFrame(rows)

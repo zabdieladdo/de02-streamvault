@@ -59,3 +59,42 @@ def group_kpis(films_clean: pd.DataFrame, window_name: str) -> pd.DataFrame:
     kpis = kpis.reset_index()
     kpis.insert(0, "window", window_name)
     return kpis[KPI_COLUMNS]
+
+
+MEASURES = ("median_roi", "mean_roi", "aggregate_roi", "median_vote_count")
+COMPARISON_COLUMNS = [
+    "measure", "leader_all_years", "leader_2000_onward", "agree", "gap_all_years", "gap_2000_onward",
+]
+
+
+def _leader_and_gap(kpis: pd.DataFrame, measure: str) -> tuple[str, float]:
+    """Which group is higher on a measure, and franchise minus standalone. Blank if not comparable."""
+    values = kpis.set_index("group")[measure].reindex(list(GROUPS))
+    if values.isna().any():
+        return "", float("nan")
+    gap = float(values["franchise"] - values["standalone"])
+    return ("tie" if gap == 0 else "franchise" if gap > 0 else "standalone"), gap
+
+
+def compare_windows(kpis_all: pd.DataFrame, kpis_2000: pd.DataFrame) -> pd.DataFrame:
+    """One row per measure: who leads in each window, whether they agree, and the gaps.
+
+    `agree` is true only when both windows name the same leader; a window where the groups
+    cannot be compared (a group has no usable films) does not count as agreement.
+    """
+    rows = []
+    for measure in MEASURES:  # a short fixed list of measures
+        lead_a, gap_a = _leader_and_gap(kpis_all, measure)
+        lead_b, gap_b = _leader_and_gap(kpis_2000, measure)
+        rows.append(
+            {
+                "measure": measure, "leader_all_years": lead_a, "leader_2000_onward": lead_b,
+                "agree": bool(lead_a != "" and lead_a == lead_b),
+                "gap_all_years": gap_a, "gap_2000_onward": gap_b,
+            }
+        )
+    return pd.DataFrame(rows, columns=COMPARISON_COLUMNS)
+
+
+def disagreeing_measures(comparison: pd.DataFrame) -> list[str]:
+    return comparison.loc[~comparison["agree"], "measure"].tolist()
