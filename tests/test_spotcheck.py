@@ -217,3 +217,233 @@ def test_a_session_opened_here_is_closed_and_one_passed_in_is_not(fetch_env, mon
     monkeypatch.setattr(fetch, "build_session", lambda: built.append(FakeSession()) or built[-1])
     spotcheck.fetch_live([603], key=TEST_KEY)
     assert len(built) == 1 and built[0].closed is True and built[0].calls
+
+
+# --- classify each difference ---------------------------------------------------------------
+
+def classify_one(fresh, raw, ours, kind="exact", field="budget", in_other=False, fresh_ok=True):
+    row = {
+        "tmdb_id": 1, "title": "x", "slices": "s", "endpoint": "details", "field": field, "kind": kind,
+        "fresh": fresh, "raw": raw, "ours": ours, "fresh_ok": fresh_ok, "in_other_field": in_other,
+    }
+    return spotcheck.classify_table(pd.DataFrame([row])).iloc[0]
+
+
+def one_field(table, field):
+    return table[table["field"] == field]
+
+
+def test_all_three_the_same_is_a_match():
+    assert classify_one(185_000_000, 185_000_000, 185_000_000)["class"] == "match"
+
+
+def test_fresh_equals_saved_but_ours_differs_is_a_parsing_error():
+    assert classify_one(185_000_000, 185_000_000, 18_500_000)["class"] == "parsing_error"
+
+
+def test_fresh_differs_but_saved_equals_ours_is_a_source_change():
+    assert classify_one(190_000_000, 185_000_000, 185_000_000)["class"] == "source_changed"
+
+
+def test_all_three_different_is_both():
+    assert classify_one(190_000_000, 185_000_000, 18_500_000)["class"] == "parsing_error_and_source_changed"
+
+
+def test_a_value_read_from_the_wrong_place_is_a_wrong_field():
+    raw_details = {"id": 1, "budget": 63, "vote_count": 5000, "title": "x"}
+    ours = {"budget": 5000}  # we stored the vote count in the budget column
+    rows = spotcheck.comparison_rows(
+        {"tmdb_id": 1, "title": "x", "slices": "s"}, {"budget": 63}, {"budget": 63}, ours, raw_details, {}
+    )
+    row = one_field(rows, "budget")
+    assert row["in_other_field"].iloc[0]
+    assert spotcheck.classify_table(row).iloc[0]["class"] == "wrong_field"
+
+
+def test_a_value_that_only_differs_is_not_a_wrong_field():
+    raw_details = {"id": 1, "budget": 63, "vote_count": 5000}
+    rows = spotcheck.comparison_rows(
+        {"tmdb_id": 1, "title": "x", "slices": "s"}, {"budget": 63}, {"budget": 63}, {"budget": 64}, raw_details, {}
+    )
+    row = one_field(rows, "budget")
+    assert not row["in_other_field"].iloc[0]
+    assert spotcheck.classify_table(row).iloc[0]["class"] == "parsing_error"
+
+
+def test_wrong_field_is_only_checked_for_money_and_dates():
+    raw_details = {"id": 1, "title": "Five", "vote_count": "Five", "budget": 5}
+    rows = spotcheck.comparison_rows(
+        {"tmdb_id": 1, "title": "x", "slices": "s"}, {"title": "Five"}, {"title": "Five"}, {"title": "Fiv"},
+        raw_details, {},
+    )
+    assert not one_field(rows, "title")["in_other_field"].iloc[0]
+
+
+def test_a_changed_vote_count_is_volatile_not_a_discrepancy_and_reports_the_change():
+    row = classify_one(11_000, 10_000, 10_000, kind="volatile", field="vote_count")
+    assert row["class"] == "volatile_changed" and row["note"] == "+10.0%"
+    assert not spotcheck.is_discrepancy(pd.Series([row["class"]])).iloc[0]
+
+
+def test_a_volatile_field_is_still_a_parsing_error_when_our_table_is_wrong():
+    assert classify_one(10_000, 10_000, 1_000, kind="volatile", field="vote_count")["class"] == "parsing_error"
+
+
+def test_the_multiple_matches_within_a_tiny_tolerance_and_not_beyond_it():
+    close = classify_one(5.0, 5.0, 5.0 + 1e-12, kind="roi", field="revenue / budget")
+    far = classify_one(5.0, 5.0, 5.01, kind="roi", field="revenue / budget")
+    assert close["class"] == "match" and far["class"] == "parsing_error"
+
+
+def test_other_numbers_must_match_exactly():
+    assert classify_one(185_000_000, 185_000_000, 185_000_001)["class"] == "parsing_error"  # no tolerance for money
+
+
+def test_whole_numbers_compare_equal_as_int_or_float_and_missing_equals_missing():
+    assert classify_one(185_000_000, 185_000_000.0, 185_000_000)["class"] == "match"
+    for empty in (None, "", float("nan"), pd.NA):
+        assert classify_one(None, empty, empty, field="imdb_id")["class"] == "match"
+    assert classify_one("tt1", None, None, field="imdb_id")["class"] == "source_changed"
+
+
+def test_a_field_whose_live_answer_is_missing_is_unverified_not_a_difference():
+    row = classify_one(None, 185_000_000, 185_000_000, fresh_ok=False)
+    assert row["class"] == "unverified" and not spotcheck.is_discrepancy(pd.Series([row["class"]])).iloc[0]
+
+
+# --- read the same fields from a response ---------------------------------------------------
+
+def test_details_fields_are_read_from_the_response():
+    payload = {
+        "id": 9, "title": "T", "release_date": "2008-07-16", "status": "Released", "budget": 100, "revenue": 300,
+        "belongs_to_collection": {"id": 263, "name": "C"}, "genres": [{"name": "Action"}, {"name": "Crime"}],
+        "imdb_id": "tt1", "vote_count": 5, "vote_average": 8.5, "popularity": 1.5,
+    }
+    got = spotcheck.extract_details(payload)
+    assert got["belongs_to_collection.id"] == 263 and got["genres[].name"] == "Action|Crime"
+    assert got["revenue / budget"] == 3.0 and got["release_date"] == "2008-07-16"
+    assert spotcheck.extract_details(None) == {}
+
+
+def test_details_without_a_collection_or_money_have_no_collection_and_no_multiple():
+    got = spotcheck.extract_details(
+        {"id": 9, "title": "T", "belongs_to_collection": None, "genres": [], "budget": 0, "revenue": 50}
+    )
+    assert got["belongs_to_collection.id"] is None and got["genres[].name"] == "" and got["revenue / budget"] is None
+
+
+def test_credits_give_sorted_directors_and_the_top_three_by_billing_order():
+    payload = {
+        "cast": [{"id": 5, "order": 3}, {"id": 6, "order": 0}, {"id": 7, "order": 1}, {"id": 8, "order": 2},
+                 {"id": 6, "order": 9}, {"id": 4}],  # a repeated person and one with no order
+        "crew": [{"id": 30, "job": "Director"}, {"id": 20, "job": "Director"}, {"id": 21, "job": "Editor"},
+                 {"id": 20, "job": "Director"}],
+    }
+    got = spotcheck.extract_credits(payload)
+    assert got["director person ids"] == "20|30" and got["top 3 cast person ids"] == "6|7|8"
+
+
+def test_credits_ties_keep_the_list_position_and_empty_lists_give_empty_text():
+    tied = {"cast": [{"id": i, "order": 0} for i in (1, 2, 3, 4)], "crew": []}
+    assert spotcheck.extract_credits(tied)["top 3 cast person ids"] == "1|2|3"
+    empty = {"director person ids": "", "top 3 cast person ids": ""}
+    assert spotcheck.extract_credits({"cast": [], "crew": []}) == empty
+    assert spotcheck.extract_credits({"id": 1}) == empty
+
+
+# --- compare a film from the snapshot, the live answer and our tables ------------------------
+
+DETAILS = {
+    "id": 603, "title": "The Matrix", "release_date": "1999-03-30", "status": "Released", "budget": 63_000_000,
+    "revenue": 463_517_383, "belongs_to_collection": {"id": 2344, "name": "Matrix"},
+    "genres": [{"name": "Action"}, {"name": "Science Fiction"}], "imdb_id": "tt0133093",
+    "vote_count": 25_000, "vote_average": 8.2, "popularity": 40.5,
+}
+CREDITS = {
+    "id": 603,
+    "cast": [{"id": 6384, "order": 0}, {"id": 2975, "order": 1}, {"id": 530, "order": 2}, {"id": 9, "order": 3}],
+    "crew": [{"id": 9340, "job": "Director"}, {"id": 9339, "job": "Director"}],
+}
+
+
+@pytest.fixture
+def snapshot(fetch_env):
+    import json
+
+    config.RAW_DETAILS_DIR.mkdir(parents=True, exist_ok=True)
+    config.RAW_CREDITS_DIR.mkdir(parents=True, exist_ok=True)
+    (config.RAW_DETAILS_DIR / "603.json").write_text(json.dumps(DETAILS), encoding="utf-8")
+    (config.RAW_CREDITS_DIR / "603.json").write_text(json.dumps(CREDITS), encoding="utf-8")
+    films = pd.DataFrame([{
+        "tmdb_id": 603, "title": "The Matrix", "release_date_raw": "1999-03-30", "status": "Released",
+        "budget": 63_000_000, "revenue": 463_517_383, "collection_id": 2344, "genres_all": "Action|Science Fiction",
+        "imdb_id": "tt0133093", "vote_count": 25_000, "vote_average": 8.2, "popularity": 40.5,
+        "roi_usable": True, "roi": 463_517_383 / 63_000_000,
+    }])
+    talent = pd.DataFrame({
+        "tmdb_id": [603] * 5, "person_id": [9339, 9340, 6384, 2975, 530],
+        "role": ["director", "director", "lead_actor", "lead_actor", "lead_actor"],
+        "billing_rank": [pd.NA, pd.NA, 1, 2, 3],
+    })
+    checked = pd.DataFrame(
+        {"tmdb_id": [603], "title": ["The Matrix"], "slices": ["extreme_low"], "stand_in": [False]}
+    )
+    return films, talent, checked
+
+
+def live_from(details, credits, details_outcome="ok"):
+    return [
+        spotcheck.LiveResult(603, "details", details_outcome, 200, 1, 0.1, "t", "", details),
+        spotcheck.LiveResult(603, "credits", "ok", 200, 1, 0.1, "t", "", credits),
+    ]
+
+
+def test_a_film_that_is_the_same_everywhere_matches_on_every_field(snapshot):
+    films, talent, checked = snapshot
+    table = spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films, talent)
+    assert len(table) == len(spotcheck.FIELDS) == 14
+    assert set(table["class"]) == {"match"}
+    assert set(table["field"]) == {f for _, f, _ in spotcheck.FIELDS}
+
+
+def test_a_changed_live_budget_is_a_source_change_and_ours_is_still_right(snapshot):
+    films, talent, checked = snapshot
+    live = live_from({**DETAILS, "budget": 70_000_000}, CREDITS)
+    by = spotcheck.build_comparison(checked, live, films, talent).set_index("field")["class"]
+    assert by["budget"] == "source_changed" and by["revenue / budget"] == "source_changed"
+    assert (by.drop(["budget", "revenue / budget"]) == "match").all()
+
+
+def test_a_wrongly_parsed_value_in_our_table_is_a_parsing_error(snapshot):
+    films, talent, checked = snapshot
+    table = spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films.assign(revenue=46_351_738), talent)
+    assert table.set_index("field").loc["revenue", "class"] == "parsing_error"
+
+
+def test_a_wrong_director_in_our_talent_table_is_found_by_the_credits_comparison(snapshot):
+    films, talent, checked = snapshot
+    talent = talent.assign(person_id=[1, 9340, 6384, 2975, 530])
+    table = spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films, talent)
+    assert table.set_index("field").loc["director person ids", "class"] == "parsing_error"
+
+
+def test_a_failed_live_answer_leaves_its_fields_unverified(snapshot):
+    films, talent, checked = snapshot
+    live = live_from(None, CREDITS, details_outcome="not_found")
+    by = spotcheck.build_comparison(checked, live, films, talent).set_index("field")["class"]
+    assert by["budget"] == "unverified" and by["revenue / budget"] == "unverified"
+    assert by["director person ids"] == "match"
+
+
+def test_comparison_reads_the_snapshot_without_writing_it(snapshot):
+    films, talent, checked = snapshot
+    before = tree_hash(config.RAW_DIR)
+    spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films, talent)
+    assert tree_hash(config.RAW_DIR) == before
+
+
+def test_a_missing_snapshot_file_is_not_a_crash(snapshot):
+    films, talent, checked = snapshot
+    (config.RAW_DETAILS_DIR / "603.json").unlink()
+    table = spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films, talent)
+    assert table.set_index("field").loc["budget", "class"] in ("source_changed", "parsing_error_and_source_changed")

@@ -3,10 +3,12 @@
 Nothing here writes to data/raw/ or the fetch log: the saved snapshot is what is being checked,
 so the check must not change it.
 """
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -207,3 +209,222 @@ def fetch_live(
         if opened:
             session.close()
     return results
+
+
+# --- compare field by field -----------------------------------------------------------
+
+# (endpoint, field, kind). Kinds: exact, volatile (changes daily on TMDb), roi (a computed ratio).
+FIELDS = [
+    ("details", "title", "exact"),
+    ("details", "release_date", "exact"),
+    ("details", "status", "exact"),
+    ("details", "budget", "exact"),
+    ("details", "revenue", "exact"),
+    ("details", "belongs_to_collection.id", "exact"),
+    ("details", "genres[].name", "exact"),
+    ("details", "imdb_id", "exact"),
+    ("details", "vote_count", "volatile"),
+    ("details", "vote_average", "volatile"),
+    ("details", "popularity", "volatile"),
+    ("credits", "director person ids", "exact"),
+    ("credits", "top 3 cast person ids", "exact"),
+    ("computed", "revenue / budget", "roi"),
+]
+FIELD_KIND = {field: kind for _, field, kind in FIELDS}
+FIELD_ENDPOINT = {field: endpoint for endpoint, field, _ in FIELDS}
+OUR_COLUMN = {
+    "title": "title", "release_date": "release_date_raw", "status": "status", "budget": "budget",
+    "revenue": "revenue", "belongs_to_collection.id": "collection_id", "genres[].name": "genres_all",
+    "imdb_id": "imdb_id", "vote_count": "vote_count", "vote_average": "vote_average",
+    "popularity": "popularity",
+}
+# fields whose value can be read from the wrong place in the response: money and dates only
+WRONG_FIELD_CHECKED = {"budget": "budget", "revenue": "revenue", "release_date": "release_date"}
+ROI_REL_TOL = 1e-9
+COMPARISON_COLUMNS = [
+    "tmdb_id", "title", "slices", "endpoint", "field", "fresh", "raw", "ours", "class", "note",
+]
+DISCREPANCY_EXCLUDED = ("match", "volatile_changed", "unverified")
+
+
+def _canon(value) -> str:
+    """A value as comparable text: missing is "", whole numbers have no decimal point."""
+    if value is None or value is pd.NA:
+        return ""
+    if isinstance(value, float | np.floating):
+        return "" if np.isnan(value) else (str(int(value)) if float(value).is_integer() else repr(float(value)))
+    if isinstance(value, bool | np.bool_):
+        return str(bool(value))
+    if isinstance(value, int | np.integer):
+        return str(int(value))
+    return str(value)
+
+
+def _ratio(budget, revenue):
+    """revenue / budget when both are positive, else None (the pipeline's own rule for a multiple)."""
+    b, r = pd.to_numeric(pd.Series([budget, revenue]), errors="coerce")
+    return float(r / b) if pd.notna(b) and pd.notna(r) and b > 0 and r > 0 else None
+
+
+def _ids(frame: pd.DataFrame, limit: int | None = None, sort: bool = False) -> str:
+    ids = frame["id"].dropna().astype("int64")
+    ids = ids.sort_values() if sort else ids
+    return "|".join(ids.head(limit).astype(str)) if limit else "|".join(ids.astype(str))
+
+
+def extract_details(payload: dict | None) -> dict:
+    """The compared fields from a details response (a fresh one or a saved one)."""
+    if not payload:
+        return {}
+    collection = payload.get("belongs_to_collection") or {}
+    genres = pd.json_normalize(payload.get("genres") or []).reindex(columns=["name"])["name"].dropna()
+    values = {
+        "title": payload.get("title"), "release_date": payload.get("release_date"),
+        "status": payload.get("status"), "budget": payload.get("budget"), "revenue": payload.get("revenue"),
+        "belongs_to_collection.id": collection.get("id"), "genres[].name": "|".join(genres.astype(str)),
+        "imdb_id": payload.get("imdb_id"), "vote_count": payload.get("vote_count"),
+        "vote_average": payload.get("vote_average"), "popularity": payload.get("popularity"),
+    }
+    values["revenue / budget"] = _ratio(values["budget"], values["revenue"])
+    return values
+
+
+def extract_credits(payload: dict | None) -> dict:
+    """Director ids (sorted) and the top three cast ids in billing order, from a credits response."""
+    if not payload:
+        return {}
+    crew = pd.json_normalize(payload.get("crew") or []).reindex(columns=["id", "job"])
+    cast = pd.json_normalize(payload.get("cast") or []).reindex(columns=["id", "order"])
+    cast = cast.assign(order=pd.to_numeric(cast["order"], errors="coerce"))
+    leads = cast.sort_values("order", na_position="last", kind="stable").drop_duplicates("id")
+    directors = crew[crew["job"] == "Director"].drop_duplicates("id")
+    return {
+        "director person ids": _ids(directors, sort=True),
+        "top 3 cast person ids": _ids(leads, limit=3),
+    }
+
+
+def our_values(film: pd.Series, talent: pd.DataFrame) -> dict:
+    """The same fields as our tables hold them: films_clean for the film, talent.csv for its people."""
+    mine = talent[talent["tmdb_id"] == film["tmdb_id"]]
+    directors = mine[mine["role"] == "director"].sort_values("person_id")
+    leads = mine[mine["role"] == "lead_actor"].sort_values("billing_rank")
+    values = {field: film[column] for field, column in OUR_COLUMN.items()}
+    values["director person ids"] = "|".join(directors["person_id"].astype(str))
+    values["top 3 cast person ids"] = "|".join(leads["person_id"].astype(str))
+    usable = bool(film["roi_usable"])
+    values["revenue / budget"] = film["roi"] if usable else _ratio(film["budget"], film["revenue"])
+    return values
+
+
+def _other_fields(raw_details: dict | None, own_key: str) -> list:
+    """Every other plain number or text in a saved details response, for the wrong-field test."""
+    if not raw_details:
+        return []
+    return [
+        v for k, v in raw_details.items()
+        if k != own_key and v not in (None, "", 0) and isinstance(v, str | int | float) and not isinstance(v, bool)
+    ]
+
+
+def comparison_rows(
+    film: dict, fresh: dict, raw: dict, ours: dict, raw_details: dict | None, fresh_ok: dict
+) -> pd.DataFrame:
+    """One row per field for one film: fresh, saved and our value, ready to classify."""
+    rows = []
+    for endpoint, field, kind in FIELDS:  # the fixed list of compared fields
+        own = WRONG_FIELD_CHECKED.get(field)
+        ours_value = ours.get(field)
+        other = [_canon(v) for v in _other_fields(raw_details, own)] if own else []
+        rows.append(
+            {
+                "tmdb_id": film["tmdb_id"], "title": film["title"], "slices": film["slices"],
+                "endpoint": endpoint, "field": field, "kind": kind,
+                "fresh": fresh.get(field), "raw": raw.get(field), "ours": ours_value,
+                "fresh_ok": fresh_ok.get(endpoint, True),
+                "in_other_field": bool(own and _canon(ours_value) not in ("", "0") and _canon(ours_value) in other),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def classify_table(table: pd.DataFrame) -> pd.DataFrame:
+    """Add `class` and `note` by comparing fresh, saved (raw) and our value in every row at once.
+
+    match; parsing_error (fresh = raw, ours differs); source_changed (fresh differs, raw = ours);
+    both at once; volatile_changed for fields TMDb updates daily; wrong_field when ours equals another
+    field of the saved response; unverified when the live answer was not available.
+    """
+    t = table.copy()
+    text = {c: t[c].map(_canon) for c in ("fresh", "raw", "ours")}
+    num = {c: pd.to_numeric(text[c], errors="coerce") for c in text}
+    tol = np.where(t["kind"] == "roi", ROI_REL_TOL, 0.0)
+
+    def same(a: str, b: str) -> pd.Series:
+        close = num[a].notna() & num[b].notna() & np.isclose(num[a].fillna(0), num[b].fillna(0), rtol=tol, atol=0)
+        return (text[a] == text[b]) | pd.Series(close, index=t.index)
+
+    fresh_raw, raw_ours = same("fresh", "raw"), same("raw", "ours")
+    volatile = t["kind"] == "volatile"
+    wrong = t["in_other_field"].astype(bool) & ~raw_ours
+    t["class"] = np.select(
+        [~t["fresh_ok"].astype(bool), wrong, fresh_raw & raw_ours, raw_ours & volatile, raw_ours, fresh_raw],
+        ["unverified", "wrong_field", "match", "volatile_changed", "source_changed", "parsing_error"],
+        default="parsing_error_and_source_changed",
+    )
+    change = (num["fresh"] - num["raw"]) / num["raw"].where(num["raw"] != 0) * 100
+    t["note"] = np.where(
+        t["class"] == "volatile_changed",
+        np.where(change.notna(), change.round(1).map("{:+.1f}%".format), "changed"),
+        np.where(t["class"] == "unverified", "live response not available", ""),
+    )
+    for c in ("fresh", "raw", "ours"):
+        t[c] = text[c]
+    return t
+
+
+def is_discrepancy(classes: pd.Series) -> pd.Series:
+    """A discrepancy is any difference that is not a match, a volatile change or an unchecked field."""
+    return ~classes.isin(DISCREPANCY_EXCLUDED)
+
+
+def read_raw(endpoint: str, tmdb_id: int) -> dict | None:
+    """The saved response for a film, read only; None if the snapshot has no usable file."""
+    path = fetch.cache_file(endpoint, tmdb_id)
+    if not path.is_file():
+        return None
+    try:
+        body = json.loads(path.read_bytes())
+    except ValueError:
+        return None
+    return body if isinstance(body, dict) else None
+
+
+def build_comparison(
+    checked: pd.DataFrame, live: list[LiveResult], films_clean: pd.DataFrame, talent: pd.DataFrame
+) -> pd.DataFrame:
+    """Compare every chosen film field by field: live answer, saved snapshot and our tables.
+
+    A loop over the few spot-check films, each of which needs its own saved files read.
+    """
+    answers = {(r.tmdb_id, r.endpoint): r for r in live}
+    by_id = films_clean.set_index("tmdb_id", drop=False)
+    parts = []
+    for film in checked.to_dict("records"):
+        tmdb_id = int(film["tmdb_id"])
+        live_details, live_credits = answers.get((tmdb_id, "details")), answers.get((tmdb_id, "credits"))
+        ok = {
+            "details": bool(live_details and live_details.outcome == "ok"),
+            "credits": bool(live_credits and live_credits.outcome == "ok"),
+        }
+        ok["computed"] = ok["details"]
+        raw_details, raw_credits = read_raw("details", tmdb_id), read_raw("credits", tmdb_id)
+        fresh = {**extract_details(live_details.body if live_details else None),
+                 **extract_credits(live_credits.body if live_credits else None)}
+        raw = {**extract_details(raw_details), **extract_credits(raw_credits)}
+        ours = our_values(by_id.loc[tmdb_id], talent)
+        parts.append(comparison_rows(film, fresh, raw, ours, raw_details, ok))
+    if not parts:
+        return pd.DataFrame(columns=[*COMPARISON_COLUMNS, "kind"])
+    table = classify_table(pd.concat(parts, ignore_index=True))
+    return table[[*COMPARISON_COLUMNS, "kind"]]
