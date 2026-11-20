@@ -8,6 +8,7 @@ import requests
 
 import run_pipeline
 from pipeline import config
+from pipeline.errors import PipelineStopError
 from tests.conftest import NOT_FOUND_BODY, TEST_KEY, FakeResponse, FakeSession
 
 IDS = ["155", "", "N/A", "155", "9412887", "-1", "tt0468569", "603"]
@@ -142,6 +143,8 @@ CSV_OUTPUTS = (
     "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv", "reconciliation.csv", "checks_report.csv",
     "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
     "films_clean.csv", "review_list.csv", "kpis.csv", "window_comparison.csv", "decision_impact.csv",
+    "bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv", "shortlist.csv",
+    "deal_note.csv",
 )
 
 
@@ -207,7 +210,7 @@ def test_windows_disagree_prints_a_banner_and_the_run_continues(capsys, tmp_path
     ]
     films = make_films(rows).assign(imdb_id=pd.Series(pd.NA, dtype="string"))
     stage4 = {
-        "films_clean": clean.add_flags(films), "films": films, "report": pd.DataFrame(),
+        "films_clean": clean.add_flags(films), "films": films, "report": pd.DataFrame(), "talent": pd.DataFrame(),
         "quarantine": pd.DataFrame({"stage": [], "reason_code": [], "raw_value": []}),
     }
     record = {"seconds": {"clean": 0.0}, "checks_passed": 0, "checks_failed": 0}
@@ -415,3 +418,67 @@ def test_c21_failure_stops_the_run(env, capsys, monkeypatch):
     _stops_on(env, capsys, "C-21", STAGE5_FILES)
     status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
     assert status.startswith("stopped at C-21, stage 5, ")
+
+
+# --- stage 6: rank and recommend ----------------------------------------------------
+
+def _stage5_tables(tmp_path):
+    """Everything stage 6 reads, built from the hand-written shortlist fixture."""
+    from pipeline import metrics
+    from tests.conftest import make_talent
+    from tests.test_rank import shortlist_fixture
+
+    f = shortlist_fixture()
+    talent = make_talent([(1, 7, "Ann", "director"), (2, 7, "Ann", "director"), (3, 7, "Ann", "director"),
+                          (101, 8, "Bob", "lead_actor")])
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    return {"films_clean": f, "kpis": kpis, "report": pd.DataFrame(), "talent": talent}
+
+
+def test_stage6_summary_and_outputs(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_stage5_tables(tmp_path), record, tmp_path)
+    text = capsys.readouterr().out
+    assert "Stage 6: rank and recommend" in text
+    assert "franchise: Collection 1, Collection 2, Collection 3" in text
+    assert "standalone: S0, S1, S2, S3, S4" in text and "audience pick: S7" in text
+    assert "deal note     Collection 1: 1.12" in text  # bundle median 9 over list median 8
+    assert "SHORTLIST SHORT" not in text and "note: openers are selected winners" in text
+    for name in ("bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv",
+                 "shortlist.csv", "deal_note.csv", "checks_report.csv"):
+        assert (tmp_path / name).is_file(), name
+    assert record["shortlist_sizes"] == {"franchise": 3, "standalone": 5, "audience pick": 1}
+    assert record["strongest_bundle"] == "Collection 1" and record["bundles_rankable"] == 4
+    assert {"list_median_roi", "list_median_votes", "bundles_tested_middle", "talent_reliable",
+            "relative_value"} <= set(record)
+    assert "rank" in record["seconds"]
+
+
+def test_short_shortlist_is_announced_and_the_run_continues(env, capsys):
+    assert run_pipeline.main([], session=fake()) == 0  # these fixture films have no money: nothing to rank
+    text = capsys.readouterr().out
+    assert "SHORTLIST SHORT: 0 of 3 franchise" in text and "SHORTLIST SHORT: 0 of 5 standalone" in text
+    assert text.rstrip().splitlines()[-1].startswith("Outputs written to ")
+    out = env.tmp_path / "out"
+    assert (out / "shortlist.csv").is_file() and (out / "deal_note.csv").is_file()
+    assert (out / "run_status.txt").read_text().startswith("complete")
+
+
+def test_c29_stops_stage6_after_writing_outputs_when_a_film_id_repeats(tmp_path):
+    tables = _stage5_tables(tmp_path)
+    f = tables["films_clean"]
+    tables["films_clean"] = pd.concat([f, f.iloc[[0]]], ignore_index=True)  # a film id twice
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    with pytest.raises(PipelineStopError, match="C-29 failed"):
+        run_pipeline._stage6(tables, record, tmp_path)
+    for name in ("bundles.csv", "talent_signal.csv", "shortlist.csv", "checks_report.csv"):
+        assert (tmp_path / name).is_file(), name  # outputs were written first
+    report = pd.read_csv(tmp_path / "checks_report.csv").set_index("check_id")
+    assert not report.loc["C-29", "passed"]
+
+
+def test_c29_stop_reaches_the_exit_code_and_status(env, capsys, monkeypatch):
+    monkeypatch.setattr(run_pipeline.rank, "talent_join_rows", lambda talent, films: (len(talent) + 1, False))
+    _stops_on(env, capsys, "C-29", ("bundles.csv", "talent_signal.csv", "shortlist.csv", "checks_report.csv"))
+    status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
+    assert status.startswith("stopped at C-29, stage 6, ")

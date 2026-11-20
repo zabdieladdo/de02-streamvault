@@ -110,3 +110,85 @@ def test_fetch_check_conservation_and_stale_cache(fetch_env):
     assert not _passed(check_fetch_stage(run))["C-09"]
     run.results = run.results.iloc[1:]  # a lost result
     assert not _passed(check_fetch_stage(run))["C-06"]
+
+
+# --- stage 6 checks -----------------------------------------------------------------
+
+def _rank_tables():
+    from pipeline import metrics, rank
+    from tests.conftest import make_talent
+    from tests.test_rank import shortlist_fixture
+
+    f = shortlist_fixture()
+    ref = rank.reference_values(f)
+    bundles = rank.build_bundles(f)
+    ep, _ = rank.middle_entry_test(f, bundles)
+    talent = make_talent([(1, 7, "Ann", "director"), (2, 7, "Ann", "director"), (3, 7, "Ann", "director")])
+    signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
+    shortlist = rank.build_shortlist(bundles, f)
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"])
+    return dict(bundles=bundles, films_clean=f, entry_positions=ep, signal=signal, shortlist=shortlist,
+                deal_note=deal, talent=talent, ref=ref)
+
+
+def _rank_report(**changes):
+    from pipeline import checks as c
+
+    tables = {**_rank_tables(), **changes}
+    return c.check_rank_stage(**tables).set_index("check_id")
+
+
+def test_rank_checks_pass_on_good_input():
+    report = _rank_report()
+    assert list(report.index) == ["C-26", "C-28", "C-29", "C-30", "C-31", "C-32"]
+    assert report["passed"].all()
+    assert "3 franchise, 5 standalone, 1 audience pick" in report.loc["C-26", "detail"]
+
+
+def test_c26_fails_when_a_shortlisted_bundle_is_too_small():
+    t = _rank_tables()
+    small = t["bundles"].assign(n_roi_usable=2)
+    assert not _rank_report(bundles=small).loc["C-26", "passed"]
+
+
+def test_c28_fails_when_a_bundle_is_missing():
+    t = _rank_tables()
+    assert not _rank_report(bundles=t["bundles"].iloc[1:]).loc["C-28", "passed"]
+
+
+def test_c29_fails_on_a_repeated_film_id():
+    t = _rank_tables()
+    doubled = pd.concat([t["films_clean"], t["films_clean"].iloc[[0]]], ignore_index=True)
+    assert not _rank_report(films_clean=doubled).loc["C-29", "passed"]
+
+
+def test_c30_fails_when_an_opener_or_a_film_is_missing():
+    t = _rank_tables()
+    ep = t["entry_positions"]
+    assert not _rank_report(entry_positions=ep[ep["position"] != "opener"]).loc["C-30", "passed"]
+    assert not _rank_report(entry_positions=ep.iloc[1:]).loc["C-30", "passed"]
+
+
+def test_c31_fails_when_a_ratio_is_wrong():
+    t = _rank_tables()
+    assert not _rank_report(bundles=t["bundles"].assign(relative_value=99.0)).loc["C-31", "passed"]
+    assert not _rank_report(deal_note=t["deal_note"].assign(walkaway_ratio=0.0)).loc["C-31", "passed"]
+
+
+def test_c32_fails_when_a_reliable_person_has_too_few_titles():
+    t = _rank_tables()
+    forged = t["signal"].assign(signal="reliable", n_titles=2, titles_above=2)
+    assert not _rank_report(signal=forged).loc["C-32", "passed"]
+
+
+def test_only_the_integrity_checks_stop_the_run():
+    from pipeline import checks as c
+
+    report = _rank_report().reset_index()
+    report.loc[:, "passed"] = False
+    for check_id in ("C-26", "C-32"):  # recorded, run continues
+        c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
+    for check_id in ("C-28", "C-29", "C-30", "C-31"):
+        with pytest.raises(PipelineStopError, match=check_id):
+            c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")

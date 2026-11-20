@@ -105,7 +105,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
 # are written). Every other check is recorded in checks_report.csv and the run continues.
-INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25")
+INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25", "C-28", "C-29", "C-30", "C-31")
 
 
 def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
@@ -359,4 +359,79 @@ def check_measure_stage(
         same = kpis_rerun.to_csv(index=False) == both.to_csv(index=False)
         add("C-25", "A second computation gives identical KPI files", same,
             "identical" if same else "the two runs differ")
+    return pd.DataFrame(rows)
+
+
+def check_rank_stage(
+    bundles: pd.DataFrame,
+    films_clean: pd.DataFrame,
+    entry_positions: pd.DataFrame,
+    signal: pd.DataFrame,
+    shortlist: pd.DataFrame,
+    deal_note: pd.DataFrame,
+    talent: pd.DataFrame,
+    ref: dict,
+) -> pd.DataFrame:
+    """Checks C-26 and C-28 to C-32 for stage 6. C-28 to C-31 stop the run; C-26 and C-32 only record."""
+    from pipeline.rank import talent_join_rows
+
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "rank",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    sizes = shortlist["list"].value_counts()
+    franchise_ids = shortlist.loc[shortlist["list"] == "franchise", "collection_id"].astype("int64")
+    used = bundles[bundles["collection_id"].isin(franchise_ids)]
+    too_small = int((used["n_roi_usable"] < config.MIN_BUNDLE_FOR_RANKING).sum())
+    add("C-26", "Every shortlisted bundle has enough usable films", too_small == 0,
+        f"{too_small} shortlisted bundles below {config.MIN_BUNDLE_FOR_RANKING} usable films; shortlist: "
+        f"{int(sizes.get('franchise', 0))} franchise, {int(sizes.get('standalone', 0))} standalone, "
+        f"{int(sizes.get('audience pick', 0))} audience pick")
+
+    n_franchise = int(films_clean["is_franchise"].astype(bool).sum())
+    n_bundled = int(bundles["n_on_list"].sum())
+    add("C-28", "Bundle sizes add up to the franchise films", n_bundled == n_franchise,
+        f"{n_bundled} films in bundles, {n_franchise} franchise films")
+
+    joined_rows, key_unique = talent_join_rows(talent, films_clean)
+    add("C-29", "Talent joins to films many-to-one and keeps every row",
+        joined_rows == len(talent) and key_unique,
+        f"{len(talent)} talent rows, {joined_rows} after the join; film key unique: {key_unique}")
+
+    rankable = bundles[bundles["rankable"]].set_index("collection_id")["n_roi_usable"]
+    by = entry_positions.groupby("collection_id")["position"].value_counts().unstack(fill_value=0)
+    by = by.reindex(columns=["opener", "middle", "latest"], fill_value=0).reindex(rankable.index, fill_value=0)
+    one_each = bool(((by["opener"] == 1) & (by["latest"] == 1)).all())
+    totals = bool((by.sum(axis=1) == rankable).all())
+    add("C-30", "Every tested bundle has one opener, one latest and all its usable films",
+        one_each and totals, f"{len(rankable)} bundles tested; one opener and one latest each: {one_each}; "
+        f"positions match usable films: {totals}")
+
+    list_median = ref["list_median_roi"]
+    figures = pd.concat(
+        [
+            bundles[["median_roi", "weakest_roi", "relative_value", "walkaway_ratio"]],
+            deal_note[["median_roi", "weakest_roi", "relative_value", "walkaway_ratio"]],
+        ],
+        ignore_index=True,
+    ).astype("float64")
+    rel_ok = np.isclose(figures["relative_value"], figures["median_roi"] / list_median, rtol=1e-9, atol=0, equal_nan=True)
+    walk_ok = np.isclose(figures["walkaway_ratio"], figures["weakest_roi"] / list_median, rtol=1e-9, atol=0, equal_nan=True)
+    n_bad = int((~(rel_ok & walk_ok)).sum())
+    add("C-31", "Relative value and walk-away equal their defining ratios", n_bad == 0,
+        f"{len(figures)} rows checked against list median {list_median:.4f}; {n_bad} differ")
+
+    reliable = signal[signal["signal"] == "reliable"]
+    bad = reliable[
+        (reliable["n_titles"] < config.RELIABLE_MIN_TITLES)
+        | (reliable["titles_above"] / reliable["n_titles"] < config.RELIABLE_HIT_RATE - 1e-9)
+    ]
+    add("C-32", "Every reliable person has enough titles and a high enough hit rate", len(bad) == 0,
+        f"{len(reliable)} reliable; {len(bad)} below the thresholds")
     return pd.DataFrame(rows)

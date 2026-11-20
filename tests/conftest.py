@@ -95,6 +95,14 @@ def fetch_env(tmp_path, monkeypatch, no_sleep):
     return SimpleNamespace(raw=raw, key=TEST_KEY, tmp_path=tmp_path)
 
 
+def _release_date(r: dict):
+    """A date for a fixture row: the given date, else mid-year of its year, else missing."""
+    if "date" in r:
+        return pd.Timestamp(r["date"])
+    year = r.get("year", 2010)
+    return pd.NaT if pd.isna(year) else pd.Timestamp(f"{year}-06-01")
+
+
 def make_films(rows: list[dict]) -> pd.DataFrame:
     """A films table (stage 3 shape, the columns stages 4 and 5 read) from short hand-written rows.
 
@@ -110,7 +118,7 @@ def make_films(rows: list[dict]) -> pd.DataFrame:
                 "first_line_number": i + 1,
                 "title": r.get("title", f"Film {i}"),
                 "release_year": r.get("year", 2010),
-                "release_date": pd.Timestamp(r.get("date", f"{r.get('year', 2010)}-06-01")),
+                "release_date": _release_date(r),
                 "status": r.get("status", "Released"),
                 "budget": r.get("budget", 1_000_000),
                 "revenue": r.get("revenue", 2_000_000),
