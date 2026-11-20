@@ -1,6 +1,6 @@
 # ADR-007: Read saved responses from one snapshot per endpoint
 
-- **Status:** Proposed (assistant draft)
+- **Status:** Accepted
 - **Date:** 2026-11-20
 - **Decision owner:** Zabdiel
 
