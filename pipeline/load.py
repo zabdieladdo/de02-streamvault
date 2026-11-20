@@ -107,9 +107,11 @@ def write_stage1_outputs(
     quarantine: pd.DataFrame,
     reconciliation: pd.DataFrame,
     checks: pd.DataFrame,
+    out_dir=None,
 ) -> None:
-    """Write the four stage 1 CSVs to OUT_DIR (UTF-8, no index)."""
-    config.OUT_DIR.mkdir(parents=True, exist_ok=True)
+    """Write the four stage 1 CSVs to out_dir, default OUT_DIR (UTF-8, no index)."""
+    out_dir = out_dir or config.OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     tables = {
         "ids_to_fetch.csv": ids_to_fetch,
         "quarantine.csv": quarantine,
@@ -117,7 +119,7 @@ def write_stage1_outputs(
         "checks_report.csv": checks,
     }
     for name, table in tables.items():
-        table.to_csv(config.OUT_DIR / name, index=False, encoding="utf-8")
+        table.to_csv(out_dir / name, index=False, encoding="utf-8")
 
 
 def append_run_log(record: dict) -> None:
@@ -132,9 +134,11 @@ def write_fetch_outputs(
     quarantine: pd.DataFrame,
     reconciliation: pd.DataFrame,
     checks: pd.DataFrame,
+    out_dir=None,
 ) -> None:
     """Rewrite the shared tables with the fetch stage added, and write fetched_ids.csv."""
-    config.OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = out_dir or config.OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
     tables = {
         "fetched_ids.csv": fetched_ids,
         "quarantine.csv": quarantine,
@@ -142,4 +146,4 @@ def write_fetch_outputs(
         "checks_report.csv": checks,
     }
     for name, table in tables.items():
-        table.to_csv(config.OUT_DIR / name, index=False, encoding="utf-8")
+        table.to_csv(out_dir / name, index=False, encoding="utf-8")

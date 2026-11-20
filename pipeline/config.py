@@ -8,6 +8,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 INPUT_IDS = REPO_ROOT / "data" / "input" / "id_list.csv"
 OUT_DIR = REPO_ROOT / "out"
+LIMITED_OUT_DIR = OUT_DIR / "limited"  # --limit runs write here, never over full results
 RAW_DIR = REPO_ROOT / "data" / "raw"  # unused until the fetch stage
 
 EXPECTED_HEADER = "tmdb_id"

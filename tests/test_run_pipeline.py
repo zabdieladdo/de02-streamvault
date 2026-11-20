@@ -16,6 +16,7 @@ IDS = ["155", "", "N/A", "155", "9412887", "-1", "tt0468569", "603"]
 def env(write_ids, fetch_env, monkeypatch):
     monkeypatch.setattr(config, "INPUT_IDS", write_ids(IDS))
     monkeypatch.setattr(config, "OUT_DIR", fetch_env.tmp_path / "out")
+    monkeypatch.setattr(config, "LIMITED_OUT_DIR", fetch_env.tmp_path / "out" / "limited")
     return fetch_env
 
 
@@ -83,8 +84,13 @@ def test_limit_run_is_marked(env, capsys):
     session = FakeSession()
     assert run_pipeline.main(["--limit", "1"], session=session) == 0
     assert set(session.calls) == {"/movie/155", "/movie/155/credits"}
-    assert "LIMITED RUN" in capsys.readouterr().out
-    recon = pd.read_csv(env.tmp_path / "out" / "reconciliation.csv")
+    text = capsys.readouterr().out
+    assert "LIMITED RUN" in text
+    last = text.rstrip().splitlines()[-1]
+    assert last.startswith("Outputs written to ") and "limited" in last
+    assert last.endswith("(LIMITED RUN; full results in " + last.split("full results in ")[1])
+    assert last.endswith("/ unchanged)")
+    recon = pd.read_csv(env.tmp_path / "out" / "limited" / "reconciliation.csv")
     assert "Not processed (limited run)" in set(recon["stage"])
     assert recon["rows"].iloc[-1] == 1
 
@@ -121,3 +127,36 @@ def test_main_returns_1_on_bad_header(write_ids, fetch_env, monkeypatch, capsys)
     monkeypatch.setattr(config, "OUT_DIR", fetch_env.tmp_path / "out")
     assert run_pipeline.main([]) == 1
     assert "STOPPED" in capsys.readouterr().out
+
+
+CSV_OUTPUTS = (
+    "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv", "reconciliation.csv", "checks_report.csv",
+)
+
+
+def test_limited_run_leaves_full_outputs_alone(env):
+    out = env.tmp_path / "out"
+    run_pipeline.main([], session=fake())
+    before = {p.name: p.read_bytes() for p in out.glob("*.csv")}
+    assert set(before) == set(CSV_OUTPUTS)
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    after = {p.name: p.read_bytes() for p in out.glob("*.csv")}
+    assert after == before
+
+
+def test_limited_run_writes_its_own_outputs(env):
+    run_pipeline.main([], session=fake())
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    limited = env.tmp_path / "out" / "limited"
+    assert {p.name for p in limited.glob("*.csv")} == set(CSV_OUTPUTS)
+    recon = pd.read_csv(limited / "reconciliation.csv")
+    assert recon["rows"].iloc[-1] == 1  # one id fetched
+
+
+def test_run_log_records_both_runs_and_output_dir(env):
+    run_pipeline.main([], session=fake())
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    lines = (env.tmp_path / "out" / "run_log.jsonl").read_text(encoding="utf-8").splitlines()
+    full, limited = (json.loads(x) for x in lines)
+    assert full["limit"] is None and full["output_dir"] == str(env.tmp_path / "out")
+    assert limited["limit"] == 1 and limited["output_dir"].endswith("limited")

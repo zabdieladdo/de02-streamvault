@@ -36,7 +36,7 @@ def _parse_args(argv):
     return parser.parse_args(argv)
 
 
-def _stage1(record: dict) -> dict:
+def _stage1(record: dict, out_dir: Path) -> dict:
     t0 = time.perf_counter()
     run_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -44,7 +44,7 @@ def _stage1(record: dict) -> dict:
     ids_to_fetch, quarantine = validate.classify_ids(raw, run_at=run_at)
     report = checks.check_load_stage(meta, raw, ids_to_fetch, quarantine)
     reconciliation = load.build_reconciliation(len(raw), ids_to_fetch, quarantine)
-    load.write_stage1_outputs(ids_to_fetch, quarantine, reconciliation, report)
+    load.write_stage1_outputs(ids_to_fetch, quarantine, reconciliation, report, out_dir=out_dir)
 
     seconds = time.perf_counter() - t0
     by_reason = {c: int(n) for c, n in quarantine["reason_code"].value_counts().items()}
@@ -81,7 +81,7 @@ def _stage1(record: dict) -> dict:
     print(f"  to fetch     {len(ids_to_fetch)}   ({n_large} flagged as large ids, kept)")
     print(f"  checks  {n_passed} passed, {n_failed} failed")
     print(f"  time    {seconds:.3f} s")
-    print(f"Outputs written to {_display_path(config.OUT_DIR)}/")
+    print(f"Outputs written to {_display_path(out_dir)}/")
 
     checks.raise_if_conservation_failed(report)  # after the report is on disk
     return {
@@ -107,7 +107,7 @@ def _outcome_line(label: str, outcomes: pd.Series) -> str:
     return f"{label} " + " | ".join(parts)
 
 
-def _stage2(stage1: dict, args, session, key, record: dict) -> None:
+def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> None:
     t0 = time.perf_counter()
     ids = stage1["ids_to_fetch"]
     try:
@@ -127,7 +127,7 @@ def _stage2(stage1: dict, args, session, key, record: dict) -> None:
         ids_processed=len(run.ids_processed), limit=args.limit,
     )
     report = pd.concat([stage1["report"], report2], ignore_index=True)
-    load.write_fetch_outputs(fetched_ids, quarantine, reconciliation, report)
+    load.write_fetch_outputs(fetched_ids, quarantine, reconciliation, report, out_dir=out_dir)
 
     n_cached = int(results["source"].eq("cache").sum())
     by_outcome = {k: int(v) for k, v in results["outcome"].value_counts().items()}
@@ -179,7 +179,11 @@ def _stage2(stage1: dict, args, session, key, record: dict) -> None:
         row = report2.loc[report2["check_id"] == "C-10i", "detail"].iloc[0]
         print(f"  ANALYSIS INCOMPLETE: {row}")
     print(f"  time         {seconds:.1f} s")
-    print(f"Outputs written to {_display_path(config.OUT_DIR)}/")
+    if args.limit:
+        print(f"Outputs written to {_display_path(out_dir)}/ "
+              f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
+    else:
+        print(f"Outputs written to {_display_path(out_dir)}/")
 
 
 def main(argv=None, session=None) -> int:
@@ -189,11 +193,12 @@ def main(argv=None, session=None) -> int:
         key = config.get_api_key()
     except PipelineStopError:
         key = None  # a fully cached run needs no key; the fetch stage raises if it does
-    record: dict = {"seconds": {}, "stopped": None}
+    out_dir = config.LIMITED_OUT_DIR if args.limit else config.OUT_DIR
+    record: dict = {"seconds": {}, "stopped": None, "output_dir": _display_path(out_dir)}
     code = 0
     try:
-        stage1 = _stage1(record)
-        _stage2(stage1, args, session, key, record)
+        stage1 = _stage1(record, out_dir)
+        _stage2(stage1, args, session, key, record, out_dir)
     except PipelineStopError as exc:
         message = redact(str(exc), key)
         print(f"STOPPED: {message}")
