@@ -41,7 +41,6 @@ WINDOWS = (WINDOW_ALL, WINDOW_2000)
 def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
     """The bundle measures and ranks for the films given: all films, or only those in one window."""
     f = films_clean[films_clean["is_franchise"].astype(bool) & films_clean["collection_id"].notna()]
-    usable = f["roi_usable"].astype(bool)
     f = f.sort_values("tmdb_id").assign(
         collection_id=lambda d: d["collection_id"].astype("int64"),
         roi_u=lambda d: d["roi"].astype("float64").where(d["roi_usable"].astype(bool)),

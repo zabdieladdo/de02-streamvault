@@ -4,7 +4,7 @@ import json
 import pandas as pd
 import pytest
 
-from pipeline import checks, config, load, transform
+from pipeline import checks, load, transform
 from pipeline.errors import PipelineStopError
 
 pytestmark = pytest.mark.usefixtures("fetch_env")

@@ -1,9 +1,8 @@
 """Stage 6: bundles, middle entries, talent signal, shortlist, deal note. Hand-checkable fixtures."""
-import numpy as np
 import pandas as pd
 import pytest
 
-from pipeline import clean, config, rank
+from pipeline import clean, rank
 from tests.conftest import make_films, make_talent
 
 

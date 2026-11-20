@@ -199,7 +199,6 @@ def decision_impact(films_clean: pd.DataFrame, quarantine: pd.DataFrame, i01_map
     n_not_found = int((quarantine["reason_code"] == "not_found_on_api").sum())
     add("not-found ids excluded (ADR-008)", "no data to include", f, n_not_found)
 
-    ok = released & (budget > 0) & (revenue > 0) & ~units
     zero_mask = (budget == 0) | (revenue == 0)
     add("zero money = not reported (S03, S04)", "zeros treated as real",
         _with_roi(f, released & (budget > 0) & ~units).assign(_hit=zero_mask),
