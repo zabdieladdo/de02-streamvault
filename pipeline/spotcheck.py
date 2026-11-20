@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import requests
 
-from pipeline import config, fetch
+from pipeline import clean, config, fetch, rank
 from pipeline.errors import PipelineStopError
 from pipeline.redact import redact
 from pipeline.transform import imdb_crossref
@@ -428,3 +428,99 @@ def build_comparison(
         return pd.DataFrame(columns=[*COMPARISON_COLUMNS, "kind"])
     table = classify_table(pd.concat(parts, ignore_index=True))
     return table[[*COMPARISON_COLUMNS, "kind"]]
+
+
+# --- does any difference move the recommendation? -------------------------------------------
+
+MONEY_FIELDS = ("budget", "revenue")
+IMPACT_CLASSES = ("source_changed", "parsing_error", "parsing_error_and_source_changed")
+SHORTLIST_KEY = ["window", "list", "rank", "name", "vote_rank"]
+
+
+def _recommendation(films: pd.DataFrame) -> dict:
+    """The recommendation as the pipeline would compute it from these films: bundles, shortlists, robust pick."""
+    flagged = clean.add_flags(films)  # re-derive usable, multiple and window flags after any change
+    bundles = rank.build_bundles(flagged)
+    shortlist = rank.build_shortlists(bundles, flagged)
+    robust = rank.robust_candidate(bundles)
+    return {
+        "flagged": flagged, "bundles": bundles,
+        "robust": None if robust.empty else str(robust["collection_name"].iloc[0]),
+        "shortlist": shortlist[SHORTLIST_KEY].reset_index(drop=True),
+    }
+
+
+def _with_value(films: pd.DataFrame, tmdb_id: int, column: str, fresh) -> pd.DataFrame:
+    """A copy of the films table with one film's value replaced by the fresh one."""
+    out = films.copy()
+    out.loc[out["tmdb_id"] == tmdb_id, column] = int(float(fresh))
+    return out
+
+
+def _number(x) -> str:
+    return "n/a" if pd.isna(x) else f"{float(x):.2f}"
+
+
+def _describe(change: str, before: dict, after: dict, tmdb_id: int) -> tuple[bool, str]:
+    """Whether the recommendation moved, and a plain sentence on what the change did."""
+    film_before = before["flagged"].set_index("tmdb_id").loc[tmdb_id]
+    film_after = after["flagged"].set_index("tmdb_id").loc[tmdb_id]
+    robust_moved = before["robust"] != after["robust"]
+    lists_moved = not before["shortlist"].equals(after["shortlist"])
+    parts = [change, f"film multiple {_number(film_before['roi'])} -> {_number(film_after['roi'])}"]
+    collection = film_before["collection_id"]
+    if pd.notna(collection):
+        a = before["bundles"].set_index("collection_id").loc[int(collection)]
+        b = after["bundles"].set_index("collection_id").loc[int(collection)]
+        parts.append(
+            f"bundle median {_number(a['median_roi'])} -> {_number(b['median_roi'])}, "
+            f"rank {a['bundle_rank']} -> {b['bundle_rank']} (2000 onward {a['bundle_rank_2000_on']} -> "
+            f"{b['bundle_rank_2000_on']})"
+        )
+    parts.append(
+        f"robust candidate {before['robust']} -> {after['robust']}" if robust_moved else "robust candidate unchanged"
+    )
+    parts.append("a shortlist changes" if lists_moved else "shortlists unchanged")
+    return robust_moved or lists_moved, "; ".join(parts)
+
+
+def assess_impact(comparison: pd.DataFrame, films_clean: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """Add `moves_recommendation` and `impact` to the comparison, and one overall answer.
+
+    Each budget or revenue difference (source_changed, parsing_error or both) is applied to a copy of
+    the films table, one at a time, and the bundles, shortlists and robust candidate are recomputed.
+    A changed vote count is applied the same way: it can only matter through a vote_rank. Every other
+    field does not enter any ranking. A loop over the few differences, not over films.
+    """
+    out = comparison.assign(moves_recommendation=False, impact="")
+    differs = out["class"] != "match"
+    money = out[out["field"].isin(MONEY_FIELDS) & out["class"].isin(IMPACT_CLASSES)]
+    votes = out[(out["field"] == "vote_count") & differs & (out["class"] != "unverified")]
+    if money.empty and votes.empty:
+        return out, {"moves": False, "what": "", "volatile_moves": False}
+
+    films = films_clean.copy()
+    before = _recommendation(films)
+    moved: list[str] = []
+
+    differing = pd.concat([money, votes])
+    for index, row in zip(differing.index, differing.to_dict("records")):  # the few differing fields
+        column = row["field"]
+        changed = _with_value(films, int(row["tmdb_id"]), column, row["fresh"])
+        after = _recommendation(changed)
+        change = f"{row['title']} {column} {row['raw']} -> {row['fresh']}"
+        moves, text = _describe(change, before, after, int(row["tmdb_id"]))
+        out.loc[index, ["moves_recommendation", "impact"]] = [moves, text]
+        if moves:
+            moved.append(text)
+
+    volatile_moves = False
+    if len(votes) > 1:  # all the fresh vote counts together, in case only the combination reorders a rank
+        together = films
+        for row in votes.to_dict("records"):  # the same few fields, applied one after another
+            together = _with_value(together, int(row["tmdb_id"]), "vote_count", row["fresh"])
+        volatile_moves = not before["shortlist"].equals(_recommendation(together)["shortlist"])
+    volatile_moves = volatile_moves or bool(out.loc[votes.index, "moves_recommendation"].any())
+    if volatile_moves and not moved:
+        moved.append("fresh vote counts change a vote rank in the shortlist")
+    return out, {"moves": bool(moved), "what": " | ".join(moved), "volatile_moves": volatile_moves}

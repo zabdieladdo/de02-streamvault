@@ -447,3 +447,116 @@ def test_a_missing_snapshot_file_is_not_a_crash(snapshot):
     (config.RAW_DETAILS_DIR / "603.json").unlink()
     table = spotcheck.build_comparison(checked, live_from(DETAILS, CREDITS), films, talent)
     assert table.set_index("field").loc["budget", "class"] in ("source_changed", "parsing_error_and_source_changed")
+
+
+# --- does a difference move the recommendation? -----------------------------------------------
+
+def impact_films():
+    """Collection 1 leads collection 2 (median 9.2 against 9.1) in both windows; standalones s0-s6."""
+    def bundle(collection, rois, base_id):
+        return [
+            {"tmdb_id": base_id + i, "title": f"{collection}-{i + 1}", "franchise": collection,
+             "year": 2001 + 3 * i, **money(r)}
+            for i, r in enumerate(rois)
+        ]
+
+    rows = bundle(1, [12, 9.2, 9.0], 100) + bundle(2, [9.1, 9.1, 9.1], 200)
+    rows += [{"tmdb_id": 300 + i, "title": f"s{i}", "year": 2010 + i, "votes": 5000 - 100 * i, **money(20 - i)}
+             for i in range(7)]
+    return clean.add_flags(make_films(rows))
+
+
+def difference(tmdb_id, title, field, fresh, raw, ours=None, cls="source_changed"):
+    return {
+        "tmdb_id": tmdb_id, "title": title, "slices": "s", "endpoint": "details", "field": field,
+        "fresh": str(fresh), "raw": str(raw), "ours": str(raw if ours is None else ours), "class": cls,
+        "note": "", "kind": "exact",
+    }
+
+
+def assess(*rows, films=None):
+    return spotcheck.assess_impact(pd.DataFrame(list(rows)), impact_films() if films is None else films)
+
+
+def test_a_fresh_revenue_that_drops_the_robust_candidate_below_another_bundle_moves_the_recommendation():
+    table, overall = assess(difference(101, "1-2", "revenue", 1_000_000, 9_200_000))
+    row = table.iloc[0]
+    assert row["moves_recommendation"] and "robust candidate Collection 1 -> Collection 2" in row["impact"]
+    assert "film multiple 9.20 -> 1.00" in row["impact"] and "bundle median 9.20 -> 9.00" in row["impact"]
+    assert overall["moves"] and "Collection 1 -> Collection 2" in overall["what"]
+
+
+def test_a_change_that_leaves_the_ranking_alone_does_not_move_it():
+    table, overall = assess(difference(100, "1-1", "revenue", 11_000_000, 12_000_000))  # 12.0 down to 11.0
+    row = table.iloc[0]
+    assert not row["moves_recommendation"] and "robust candidate unchanged" in row["impact"]
+    assert "shortlists unchanged" in row["impact"] and "bundle median 9.20 -> 9.20" in row["impact"]
+    assert overall == {"moves": False, "what": "", "volatile_moves": False}
+
+
+def test_a_parsing_error_on_money_is_assessed_with_the_correct_value():
+    wrong_in_ours = difference(101, "1-2", "revenue", 1_000_000, 1_000_000, ours=9_200_000, cls="parsing_error")
+    table, overall = assess(wrong_in_ours)
+    assert table.iloc[0]["moves_recommendation"] and overall["moves"]
+
+
+def test_a_budget_difference_is_assessed_like_a_revenue_difference():
+    table, _ = assess(difference(101, "1-2", "budget", 9_200_000, 1_000_000))  # the multiple falls from 9.2 to 1.0
+    assert table.iloc[0]["moves_recommendation"]
+
+
+def test_a_film_that_is_a_standalone_has_no_bundle_in_its_note():
+    table, _ = assess(difference(300, "s0", "revenue", 5_000_000, 20_000_000))
+    assert "bundle median" not in table.iloc[0]["impact"] and "film multiple 20.00 -> 5.00" in table.iloc[0]["impact"]
+
+
+def test_fields_that_enter_no_ranking_cannot_move_it():
+    rows = [difference(101, "1-2", "title", "New title", "1-2"), difference(101, "1-2", "imdb_id", "tt9", "tt1"),
+            difference(101, "1-2", "vote_average", 9.9, 8.0, cls="volatile_changed")]
+    table, overall = assess(*rows)
+    assert not table["moves_recommendation"].any() and (table["impact"] == "").all()
+    assert overall["moves"] is False
+
+
+def test_matches_and_unverified_rows_are_left_alone():
+    rows = [difference(101, "1-2", "revenue", 9_200_000, 9_200_000, cls="match"),
+            difference(101, "1-2", "revenue", "", 9_200_000, cls="unverified")]
+    table, overall = assess(*rows)
+    assert not table["moves_recommendation"].any() and overall["moves"] is False
+
+
+def test_a_fresh_vote_count_that_reorders_the_vote_rank_is_reported():
+    # s0 has 5000 votes and s1 4900: a fresh count of 5200 for s1 puts it first
+    table, overall = assess(difference(301, "s1", "vote_count", 5200, 4900, cls="volatile_changed"))
+    assert table.iloc[0]["moves_recommendation"] and overall["volatile_moves"] and overall["moves"]
+
+
+def test_a_fresh_vote_count_that_keeps_the_order_does_not_move_anything():
+    table, overall = assess(difference(301, "s1", "vote_count", 4950, 4900, cls="volatile_changed"))
+    assert not table.iloc[0]["moves_recommendation"]
+    assert overall == {"moves": False, "what": "", "volatile_moves": False}
+
+
+def test_several_vote_counts_are_checked_together_as_well_as_one_at_a_time():
+    rows = [difference(301, "s1", "vote_count", 4950, 4900, cls="volatile_changed"),
+            difference(302, "s2", "vote_count", 4850, 4800, cls="volatile_changed")]
+    table, overall = assess(*rows)
+    assert not table["moves_recommendation"].any() and overall["volatile_moves"] is False
+
+
+def test_no_differences_means_no_assessment_and_no_inputs_are_changed():
+    films = impact_films()
+    before = films.copy()
+    comparison = pd.DataFrame([difference(101, "1-2", "revenue", 9_200_000, 9_200_000, cls="match")])
+    table, overall = spotcheck.assess_impact(comparison, films)
+    assert table["moves_recommendation"].eq(False).all() and overall["moves"] is False
+    spotcheck.assess_impact(pd.DataFrame([difference(101, "1-2", "revenue", 1_000_000, 9_200_000)]), films)
+    pd.testing.assert_frame_equal(films, before)
+
+
+def test_the_assessment_never_touches_the_snapshot(fetch_env):
+    config.RAW_DETAILS_DIR.mkdir(parents=True, exist_ok=True)
+    (config.RAW_DETAILS_DIR / "101.json").write_text("{}", encoding="utf-8")
+    before = tree_hash(config.RAW_DIR)
+    assess(difference(101, "1-2", "revenue", 1_000_000, 9_200_000))
+    assert tree_hash(config.RAW_DIR) == before
