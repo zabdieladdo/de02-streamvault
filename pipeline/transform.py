@@ -147,14 +147,20 @@ def flatten_details(details_list: list) -> pd.DataFrame:
 # --- credits -> counts and talent ------------------------------------------------
 
 def _people(df: pd.DataFrame, column: str, keep: list) -> pd.DataFrame:
-    """Explode one list-of-dicts column into one row per person per film."""
-    exploded = df[["id", column]].explode(column)
-    exploded = exploded[exploded[column].notna()]
-    if exploded.empty:
-        people = pd.DataFrame(columns=keep)
+    """One row per person per film from one list column ("cast" or "crew") of the credits records.
+
+    Uses json_normalize with the list as record_path and the film id as meta. A film whose list is
+    missing, null or empty has no rows here; its count is still 0 because flatten_credits rebuilds
+    the counts from the full list of film ids.
+    """
+    has_list = df[column].map(type).eq(list)  # a missing key (NaN) or a null (None) is not a list
+    records = df.loc[has_list, ["id", column]].to_dict("records")
+    if records:
+        people = pd.json_normalize(records, record_path=column, meta=["id"], meta_prefix="film_")
     else:
-        people = pd.json_normalize(exploded[column].tolist()).reindex(columns=keep)
-    people["tmdb_id"] = exploded["id"].astype("int64").to_numpy()
+        people = pd.DataFrame()
+    people = people.reindex(columns=[*keep, "film_id"])
+    people["tmdb_id"] = people.pop("film_id").astype("int64")
     return people.reset_index(drop=True)
 
 

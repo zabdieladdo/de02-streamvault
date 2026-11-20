@@ -309,3 +309,81 @@ def test_reconciliation_continues_through_flatten():
     assert recon["stage"].iloc[-1] == "In the analysis table (one row per film)"
     assert recon["rows"].iloc[-1] == 1
     assert "Quarantined: cache_unreadable" in set(recon["stage"])
+
+
+# --- credits flattening: json_normalize gives the same talent table as the explode method ------
+
+def _people_by_explode(df, column, keep):
+    """The method used before json_normalize(record_path=...): explode, then normalise."""
+    exploded = df[["id", column]].explode(column)
+    exploded = exploded[exploded[column].notna()]
+    if exploded.empty:
+        people = pd.DataFrame(columns=keep)
+    else:
+        people = pd.json_normalize(exploded[column].tolist()).reindex(columns=keep)
+    people["tmdb_id"] = exploded["id"].astype("int64").to_numpy()
+    return people.reset_index(drop=True)
+
+
+CREDITS = [
+    {"id": 1, "cast": [{"id": 10, "name": "A", "order": 2}, {"id": 11, "name": "B", "order": 0},
+                       {"id": 12, "name": "C", "order": 1}, {"id": 13, "name": "D", "order": 3},
+                       {"id": 14, "name": "E"},  # no order at all
+                       {"id": 10, "name": "A", "order": 9}],  # the same person listed twice
+     "crew": [{"id": 90, "name": "Dir", "job": "Director"}, {"id": 91, "name": "Ed", "job": "Editor"}]},
+    {"id": 2, "cast": [], "crew": []},  # an empty cast and an empty crew
+    {"id": 3, "crew": [{"id": 92, "name": "Dir2", "job": "Director"}]},  # the cast key is missing
+    {"id": 4, "cast": None, "crew": None},  # null lists
+    {"id": 5, "cast": [{"id": 10, "name": "A", "order": 0}, {"id": 15, "name": "F", "order": 0}],  # tied order
+     "crew": [{"id": 90, "name": "Dir", "job": "Director"}, {"id": 93, "name": "Co", "job": "Director"}]},
+    {"id": 6, "cast": [{"id": 16, "name": "G", "order": 1}]},  # the crew key is missing
+]
+
+
+def _both_ways(credits, monkeypatch):
+    new = transform.flatten_credits(credits)
+    monkeypatch.setattr(transform, "_people", _people_by_explode)
+    old = transform.flatten_credits(credits)
+    return new, old
+
+
+def test_json_normalize_gives_the_same_talent_table_as_before(monkeypatch):
+    (counts_new, talent_new), (counts_old, talent_old) = _both_ways(CREDITS, monkeypatch)
+    pd.testing.assert_frame_equal(talent_new, talent_old)
+    pd.testing.assert_frame_equal(counts_new, counts_old)
+    assert talent_new.to_csv(index=False) == talent_old.to_csv(index=False)  # byte for byte
+
+
+def test_empty_missing_and_null_lists_count_as_zero_and_stay_in_the_counts(monkeypatch):
+    (counts, talent), _ = _both_ways(CREDITS, monkeypatch)
+    c = counts.set_index("tmdb_id")
+    assert list(c.index) == [1, 2, 3, 4, 5, 6]  # every film keeps a row
+    assert (c.loc[[2, 4], ["n_cast", "n_crew", "n_directors", "n_lead_actors"]] == 0).all().all()
+    assert c.loc[3, "n_cast"] == 0 and c.loc[3, "n_directors"] == 1  # no cast key, one director
+    assert c.loc[6, "n_crew"] == 0 and c.loc[6, "n_lead_actors"] == 1  # no crew key, one actor
+    assert c.loc[1, "n_cast"] == 6 and c.loc[1, "n_lead_actors"] == 3
+    assert set(talent["tmdb_id"]) == {1, 3, 5, 6}  # films 2 and 4 have no talent rows
+
+
+def test_lead_actor_rules_survive_the_change(monkeypatch):
+    (_, talent), _ = _both_ways(CREDITS, monkeypatch)
+    leads = talent[(talent["role"] == "lead_actor") & (talent["tmdb_id"] == 1)]
+    assert list(leads["name"]) == ["B", "C", "A"]  # lowest order first; the duplicate A at order 9 is dropped
+    five = talent[(talent["role"] == "lead_actor") & (talent["tmdb_id"] == 5)]
+    assert list(five["name"]) == ["A", "F"]  # a tie on order keeps the list position
+    assert sorted(talent.loc[talent["role"] == "director", "name"]) == ["Co", "Dir", "Dir", "Dir2"]
+
+
+def test_no_credits_at_all_still_gives_empty_tables_with_the_right_columns(monkeypatch):
+    for credits in ([], [{"id": 7, "cast": [], "crew": []}], [{"id": 8}]):
+        (counts_new, talent_new), (counts_old, talent_old) = _both_ways(credits, monkeypatch)
+        monkeypatch.undo()
+        pd.testing.assert_frame_equal(talent_new, talent_old)
+        pd.testing.assert_frame_equal(counts_new, counts_old)
+        assert list(talent_new.columns) == transform.TALENT_COLUMNS and talent_new.empty
+
+
+def test_film_id_comes_out_as_int64():
+    people = transform._people(pd.DataFrame(CREDITS).reindex(columns=["id", "cast", "crew"]),
+                               "cast", ["id", "name", "order"])
+    assert str(people["tmdb_id"].dtype) == "int64"
