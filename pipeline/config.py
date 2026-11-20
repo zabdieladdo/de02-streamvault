@@ -49,3 +49,7 @@ def get_api_key() -> str:
             "TMDB_API_KEY not set. Copy .env.example to .env and add your own key."
         )
     return key
+
+
+# --- Stage 3: flatten and join ---------------------------------------------
+LEAD_ACTOR_COUNT = 3  # the three lowest `order` values in a film's cast

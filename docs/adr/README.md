@@ -16,11 +16,12 @@ Status values: Accepted, Planned (agreed in `de02-final-outline.md`, ADR not yet
 | [ADR-008](ADR-008-cache-responses-including-not-found.md) | Save every response and reuse it for 180 days, including "not found" | Accepted | 2026-11-20 |
 | [ADR-009](ADR-009-fetch-failure-handling.md) | Record a failed film and carry on; stop the run when the fault is ours | Accepted | 2026-11-20 |
 | [ADR-010](ADR-010-sequential-requests-at-four-per-second.md) | Request one film at a time, at most 4 requests a second, with 5 retries | Accepted | 2026-11-20 |
+| [ADR-011](ADR-011-one-row-per-film.md) | The analysis table has one row per film | Accepted | 2026-11-20 |
+| [ADR-012](ADR-012-franchise-means-tmdb-collection.md) | A film is a franchise entry when TMDb places it in a collection | Accepted | 2026-11-20 |
+| [ADR-013](ADR-013-talent-scope-directors-and-top-three-actors.md) | The talent table holds directors and the top three billed actors only, separate from films | Accepted | 2026-11-20 |
+| [ADR-014](ADR-014-how-leads-and-directors-are-identified.md) | Lead actors are the three lowest billing positions; directors are crew with the job "Director" | Accepted | 2026-11-20 |
 | — | No numeric time budget from Evalu8; ours is analysis stage under 10 s at 500 titles, fetch timed separately (D1) | Planned | — |
-| — | Franchise = TMDb collection, with ranked edge cases (D3) | Planned | — |
-| — | Genre: first-listed genre plus genre count, one row per film (D4) | Planned | — |
 | — | Revenue or budget of 0 = missing; flag and exclude per metric (D5) | Planned | — |
 | — | `tt0468569` excluded; id resolver is the improvement beyond the brief (D6) | Planned | — |
 | — | Headline: median ROI per group; median vote count as second measure (D7) | Planned | — |
 | — | Minimum 3 films to rank a bundle, 5 for a group conclusion (D9) | Planned | — |
-| — | Grain and talent scope: one row per film; directors and top three billed actors | Planned | — |

@@ -6,6 +6,7 @@ import pandas as pd
 from pipeline import config
 from pipeline.fetch import REASON_DETAIL as FETCH_REASON_DETAIL
 from pipeline.fetch import REASON_ORDER as FETCH_REASON_ORDER
+from pipeline.transform import FLATTEN_REASON_DETAIL, FLATTEN_REASON_ORDER
 from pipeline.validate import REASON_DETAIL, REASON_ORDER
 
 
@@ -16,6 +17,7 @@ def build_reconciliation(
     fetched_ids: pd.DataFrame | None = None,
     ids_processed: int | None = None,
     limit: int | None = None,
+    films_out: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Raw count, one row per quarantine reason, then the count sent to each next stage.
 
@@ -72,6 +74,21 @@ def build_reconciliation(
                 "reason": "",
             }
         )
+        if films_out is not None:
+            add_reasons(
+                quarantine[quarantine["stage"] == "flatten"],
+                len(fetched_ids),
+                FLATTEN_REASON_ORDER,
+                FLATTEN_REASON_DETAIL,
+            )
+            records.append(
+                {
+                    "stage": "In the analysis table (one row per film)",
+                    "rows": len(films_out),
+                    "delta": pd.NA,
+                    "reason": "",
+                }
+            )
 
     out = pd.DataFrame(records)
     out["rows"] = out["rows"].astype("int64")
@@ -147,3 +164,98 @@ def write_fetch_outputs(
     }
     for name, table in tables.items():
         table.to_csv(out_dir / name, index=False, encoding="utf-8")
+
+
+# --- stage 3 outputs -------------------------------------------------------------
+
+STRING_COLUMNS = [
+    "imdb_id", "title", "original_title", "status", "original_language",
+    "collection_name", "primary_genre", "genres_all",
+]
+FILMS_DTYPES = {
+    "tmdb_id": "int64", "first_line_number": "int64",
+    **{c: "string" for c in STRING_COLUMNS},
+    "release_date_raw": "string",
+    "release_date_unparseable": "bool", "release_year": "Int64",
+    "runtime": "Int64", "budget": "Int64", "revenue": "Int64", "vote_count": "Int64",
+    "vote_average": "float64", "popularity": "float64",
+    "adult": "boolean", "video": "boolean",
+    "collection_id": "Int64", "is_franchise": "bool",
+    "n_genres": "Int64", "n_production_companies": "Int64",
+    "n_cast": "int64", "n_crew": "int64", "n_directors": "int64", "n_lead_actors": "int64",
+}
+TALENT_DTYPES = {
+    "tmdb_id": "int64", "person_id": "int64", "name": "string", "role": "string",
+    "billing_rank": "Int64", "cast_order": "Int64",
+}
+
+
+def _read(path, dtypes: dict, keep_empty=()) -> pd.DataFrame:
+    """Read a CSV with explicit types. Blank means missing, except in `keep_empty` columns.
+
+    A CSV cannot tell an empty string from a missing value, so text columns come back as
+    missing; `release_date_raw` is always text, so it keeps "".
+    """
+    columns = list(pd.read_csv(path, nrows=0).columns)
+    na_values = {c: [""] for c in columns if c not in keep_empty}
+    return pd.read_csv(
+        path, dtype={c: t for c, t in dtypes.items() if c in columns},
+        keep_default_na=False, na_values=na_values, encoding="utf-8",
+    )
+
+
+def read_films(path) -> pd.DataFrame:
+    df = _read(path, FILMS_DTYPES, keep_empty=("release_date_raw",))
+    df["release_date"] = pd.to_datetime(df["release_date"], format="%Y-%m-%d", errors="coerce")
+    return df
+
+
+def read_talent(path) -> pd.DataFrame:
+    return _read(path, TALENT_DTYPES)
+
+
+def profile_films(films: pd.DataFrame) -> pd.DataFrame:
+    """One row per column of the analysis table: the profile the findings are written from."""
+    rows = []
+    for col in films.columns:
+        s = films[col]
+        is_num = pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s)             and str(s.dtype) != "boolean"
+        is_date = pd.api.types.is_datetime64_any_dtype(s)
+        top = s.value_counts(dropna=True).head(3)
+        rows.append(
+            {
+                "column": col,
+                "dtype": str(s.dtype),
+                "n_rows": len(s),
+                "n_null": int(s.isna().sum()),
+                "n_empty_string": int((s == "").sum()) if s.dtype == object or str(s.dtype) in ("string", "str") else "",
+                "n_zero": int((s == 0).sum()) if is_num else "",
+                "n_distinct": int(s.nunique(dropna=True)),
+                "top_3": "; ".join(f"{v} ({n})" for v, n in top.items()),
+                "min": s.min() if (is_num or is_date) and s.notna().any() else "",
+                "max": s.max() if (is_num or is_date) and s.notna().any() else "",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def write_flatten_outputs(
+    films: pd.DataFrame,
+    talent: pd.DataFrame,
+    join_report: pd.DataFrame,
+    quarantine: pd.DataFrame,
+    reconciliation: pd.DataFrame,
+    checks: pd.DataFrame,
+    out_dir=None,
+) -> None:
+    """Write the stage 3 tables and rewrite the shared ones with the flatten stage added."""
+    out_dir = out_dir or config.OUT_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    films.to_csv(out_dir / "films.csv", index=False, encoding="utf-8", date_format="%Y-%m-%d")
+    talent.to_csv(out_dir / "talent.csv", index=False, encoding="utf-8")
+    join_report.to_csv(out_dir / "join_report.csv", index=False, encoding="utf-8")
+    profile_films(films).to_csv(out_dir / "films_profile.csv", index=False, encoding="utf-8",
+                                date_format="%Y-%m-%d")
+    quarantine.to_csv(out_dir / "quarantine.csv", index=False, encoding="utf-8")
+    reconciliation.to_csv(out_dir / "reconciliation.csv", index=False, encoding="utf-8")
+    checks.to_csv(out_dir / "checks_report.csv", index=False, encoding="utf-8")

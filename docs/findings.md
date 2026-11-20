@@ -2,7 +2,7 @@
 
 ## Summary
 
-The id list had 127 rows. Ten left at the load stage (six repeats and four rows with no usable id) and five more left at the fetch stage, where TMDb did not recognise them. That leaves 112 films fetched with details and credits, as of 20 Nov 2026. The highest-risk finding so far is the six repeated ids: a film counted twice can move a median in a small group. The five ids TMDb does not know cannot be evaluated, and nobody can say which films they stand for.
+127 rows were received. 10 left at load (blank, placeholder, negative, IMDb id, six repeats), 5 at the fetch (not on TMDb), leaving 112 films in the analysis table, one row per film, as of the 20 Nov 2026 snapshot. TMDb's data for these 112 is complete: no zero budgets or revenues, no missing release dates, no unreleased films, every film with a director and three billed actors. The faults in this lab are in the candidate list, not in the data returned for it. The largest risk to the recommendation is the list's shape: 96 franchise films against 16 standalones (F-06).
 
 ## Reconciliation
 
@@ -17,8 +17,20 @@ The id list had 127 rows. Ten left at the load stage (six repeats and four rows 
 | Sent to the API | 117 | | |
 | Fetch: not found on TMDb | 112 | -5 | Five ids returned "not found" (F-05) |
 | Fetched with details and credits | 112 | | Snapshot 20 Nov 2026 |
+| In the analysis table (one row per film) | 112 | 0 | Flatten stage: 0 unreadable responses; 3 joins proven with no rows added or lost |
 
 ## Findings, ranked by risk
+
+Order after the flatten stage: F-06, F-01, F-05, F-02, F-03, F-04.
+
+### F-06: The candidate list is mostly franchise films — Severity: High
+
+- **What it is:** of 112 films, 96 belong to 32 TMDb collections and 16 are standalone.
+- **How I detected it:** count of `is_franchise` after flattening (stage 3 summary).
+- **Scale:** standalones are 14% of the list. In the 2000-onward window there are 8 standalone films.
+- **Effect on the client's number:** every standalone figure rests on 16 films or fewer; one unusual standalone moves the standalone median far more than one franchise film moves the franchise median. The comparison Kwame asked for is lopsided before any calculation.
+- **What I did about it:** group sizes are reported beside every figure; minimum group sizes apply (S14); the memo's confidence level reflects the standalone count.
+- **Residual risk:** cannot be fixed by cleaning; it is how the list was built. A fair standalone comparison needs more standalone candidates.
 
 ### F-01: Six ids listed twice — Severity: High
 
@@ -38,15 +50,6 @@ The id list had 127 rows. Ten left at the load stage (six repeats and four rows 
 - **What I did about it:** quarantined as `not_found_on_api` with TMDb's message. Credits were not requested for them. The answer is remembered for 180 days, so a re-run does not ask again, and it is not counted as a failed request (ADR-008, ADR-009).
 - **Residual risk:** if the ids are real titles in another catalogue, those titles are missing from the shortlist. Q4 asks what they refer to.
 
-### F-03: One IMDb id in a list of TMDb ids — Severity: Medium
-
-- **What it is:** `tt0468569` is in IMDb's id format, not TMDb's.
-- **How I detected it:** text pattern `tt` followed by digits.
-- **Scale:** 1 row.
-- **Effect on the client's number:** probably none: it appears to be a third copy of 155, which is already in the list. If it were a film not listed elsewhere, that film would be missing from the analysis.
-- **What I did about it:** quarantined with a note; resolving IMDb ids is the planned improvement beyond the brief.
-- **Residual risk:** it suggests one of the three sources used IMDb ids; next year's list may contain more.
-
 ### F-02: The standard file reader drops a row without warning — Severity: Medium
 
 - **What it is:** a default read returns 126 rows, because the blank line is skipped and `N/A` becomes a null.
@@ -55,6 +58,15 @@ The id list had 127 rows. Ten left at the load stage (six repeats and four rows 
 - **Effect on the client's number:** none on the averages, but the counts would not reconcile, which undermines every other figure in front of the board.
 - **What I did about it:** read as text with blank lines kept; the run stops if the two counts differ (C-01).
 - **Residual risk:** low; covered by a test.
+
+### F-03: IMDb id confirmed as a third copy of film 155 — Severity: Low (was Medium)
+
+- **What it is:** `tt0468569` is the IMDb id that TMDb's own record for film 155 (The Dark Knight) carries.
+- **How I detected it:** check I-01 compared the quarantined IMDb id with every fetched film's `imdb_id`.
+- **Scale:** 1 row. The Dark Knight is listed three times in total: lines 2 and 91 as 155, line 95 as `tt0468569`.
+- **Effect on the client's number:** none; the film is in the analysis once.
+- **What I did about it:** stays quarantined; the evidence moves from "appears to be" to confirmed by the API.
+- **Residual risk:** one source supplied IMDb ids; next year's list may contain more.
 
 ### F-04: Three rows carry no id — Severity: Low
 
@@ -75,6 +87,8 @@ Of the 15 rows that are quarantined or flagged (10 quarantined at load, 5 large 
 |---|---|---|
 | Ids such as 299534, 299536, 301528 | Much larger than 11 or 13 | TMDb numbers films in the order they were added; recent films have large ids |
 | Windows line endings in the file | Can be changed silently by tools on other systems | The reader handles both (tested); the file is stored unchanged in the repository |
+| 122 directors for 112 films | More directors than films | Some films have two credited directors; each is a separate talent row, and the films table still has one row per film |
+| Talent key not unique on film id alone (join report) | A join key that repeats looks like a fan-out | The talent table is many rows per film by design; its key is film, person and role, and the join was checked as many-to-one with no rows added |
 
 ## Could not verify
 

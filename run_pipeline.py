@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline import checks, config, extract, fetch, load, validate
+from pipeline import checks, config, extract, fetch, load, transform, validate
 from pipeline.errors import PipelineStopError
 from pipeline.redact import redact
 from pipeline.validate import REASON_ORDER
@@ -107,7 +107,7 @@ def _outcome_line(label: str, outcomes: pd.Series) -> str:
     return f"{label} " + " | ".join(parts)
 
 
-def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> None:
+def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> dict:
     t0 = time.perf_counter()
     ids = stage1["ids_to_fetch"]
     try:
@@ -179,6 +179,80 @@ def _stage2(stage1: dict, args, session, key, record: dict, out_dir: Path) -> No
         row = report2.loc[report2["check_id"] == "C-10i", "detail"].iloc[0]
         print(f"  ANALYSIS INCOMPLETE: {row}")
     print(f"  time         {seconds:.1f} s")
+    print(f"Outputs written to {_display_path(out_dir)}/")
+    return {"run": run, "fetched_ids": fetched_ids, "quarantine": quarantine, "report": report}
+
+
+def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> None:
+    t0 = time.perf_counter()
+    fetched_ids = stage2["fetched_ids"]
+    run = transform.flatten_stage(fetched_ids)
+    films, talent = run.films, run.talent
+
+    report3 = checks.check_flatten_stage(run, stage1["quarantine"])
+    quarantine = (
+        pd.concat([stage2["quarantine"], run.quarantine])
+        .sort_values("line_number").reset_index(drop=True)
+    )
+    reconciliation = load.build_reconciliation(
+        len(stage1["raw"]), stage1["ids_to_fetch"], quarantine, fetched_ids,
+        ids_processed=len(stage2["run"].ids_processed), limit=args.limit, films_out=films,
+    )
+    report = pd.concat([stage2["report"], report3], ignore_index=True)
+    load.write_flatten_outputs(
+        films, talent, run.join_report, quarantine, reconciliation, report, out_dir=out_dir
+    )
+    seconds = time.perf_counter() - t0
+
+    roles = talent["role"].value_counts()
+    n_collections = int(films["collection_id"].nunique())
+    n_franchise = int(films["is_franchise"].sum())
+    no_director = int((films["n_directors"] == 0).sum())
+    few_leads = int((films["n_lead_actors"] < config.LEAD_ACTOR_COUNT).sum())
+    date_empty = int((films["release_date_raw"] == "").sum())
+    date_bad = int(films["release_date_unparseable"].sum())
+    zero_budget = int((films["budget"] == 0).sum())
+    zero_revenue = int((films["revenue"] == 0).sum())
+    n_passed, n_failed = int(report3["passed"].sum()), int((~report3["passed"]).sum())
+    joins = run.join_report
+
+    record.update(
+        {
+            "films_rows": len(films),
+            "talent_rows": len(talent),
+            "talent_by_role": {k: int(v) for k, v in roles.items()},
+            "films_with_no_director": no_director,
+            "films_with_fewer_than_3_leads": few_leads,
+            "release_date_empty": date_empty,
+            "release_date_unparseable": date_bad,
+            "zero_budget": zero_budget,
+            "zero_revenue": zero_revenue,
+            "franchise_films": n_franchise,
+            "distinct_collections": n_collections,
+            "checks_passed": record["checks_passed"] + n_passed,
+            "checks_failed": record["checks_failed"] + n_failed,
+        }
+    )
+    record["seconds"]["flatten"] = round(seconds, 4)
+
+    print()
+    print("Stage 3: flatten and join")
+    print(f"  films        {len(films)} rows (one per film), {len(run.quarantine)} quarantined at this stage")
+    print(f"  franchise    {n_franchise} films in {n_collections} collections; "
+          f"{len(films) - n_franchise} standalone")
+    print(f"  talent       {len(talent)} rows: {int(roles.get('lead_actor', 0))} lead actors, "
+          f"{int(roles.get('director', 0))} directors")
+    print(f"  gaps         {no_director} films with no director | {few_leads} with fewer than "
+          f"{config.LEAD_ACTOR_COUNT} lead actors | {date_empty} empty release dates")
+    print(f"  money        {zero_budget} films with budget 0 | {zero_revenue} with revenue 0   "
+          "(kept; decided in stage 4)")
+    added = int((joins["result_rows"] - joins["left_rows"]).clip(lower=0).sum())
+    lost = int((joins["left_rows"] - joins["result_rows"]).clip(lower=0).sum())
+    print(f"  joins        {len(joins)} proven: {added} rows added, {lost} rows lost, "
+          f"{int(joins['left_only'].sum())} unmatched")
+    print(f"  imdb check   {report3.loc[report3['check_id'] == 'I-01', 'detail'].iloc[0]}")
+    print(f"  checks       {n_passed} passed, {n_failed} failed")
+    print(f"  time         {seconds:.2f} s")
     if args.limit:
         print(f"Outputs written to {_display_path(out_dir)}/ "
               f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
@@ -198,7 +272,8 @@ def main(argv=None, session=None) -> int:
     code = 0
     try:
         stage1 = _stage1(record, out_dir)
-        _stage2(stage1, args, session, key, record, out_dir)
+        stage2 = _stage2(stage1, args, session, key, record, out_dir)
+        _stage3(stage1, stage2, args, record, out_dir)
     except PipelineStopError as exc:
         message = redact(str(exc), key)
         print(f"STOPPED: {message}")
