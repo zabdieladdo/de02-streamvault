@@ -58,6 +58,10 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 
 - Five ids above 7 million (7733901, 8471293, 8471294, 9412887, 9412888) were flagged and sent forward. Severity set once the API answers.
 
+### Observation: problems cluster near the end of the file
+
+Of the 15 rows that are quarantined or flagged (10 quarantined, 5 large ids), 7 sit in lines 2-89 (7 of 88 rows, 8%) and 8 in lines 90-128 (8 of 39 rows, 21%). Lines 90-102 alone hold 7 of 13. One reading: the last block was appended from a single source, possibly the studio batch, which would also explain the IMDb id. This is a hypothesis, not a finding: the file has no source column. It matters for Adjoa because, if true, checking that one source's next batch catches most of next year's problems (Q1).
+
 ## Looked wrong, is not wrong
 
 | Apparent problem | Why it looks wrong | Why it is actually fine |
@@ -67,4 +71,4 @@ Load stage only; the ranking is final after the fetch stage. Of the 127 rows in 
 
 ## Could not verify
 
-- Which of the three sources each row came from: the file has no source column, so repeats and bad values cannot be traced to the source that produced them.
+- Which of the three sources each row came from: the file has no source column, so repeats and bad values cannot be traced to the source that produced them. The clustering above suggests, but does not show, one source.

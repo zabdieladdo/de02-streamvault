@@ -4,6 +4,6 @@ Kwame is not available to answer, so each question carries the answer we assumed
 
 | ID | When | To | Finding | Question | Answer we assumed | What we did |
 |---|---|---|---|---|---|---|
-| Q1 | Load | Adjoa | F-01, F-03 | Can each row in the list carry its source (tracker, predecessor's spreadsheet, studio batch)? | No source available | Treated all rows the same; noted under "Could not verify" |
+| Q1 | Load | Adjoa | F-01, F-03 | Can each row in the list carry its source (tracker, predecessor's spreadsheet, studio batch)? Problem rows bunch at the end of the file (8 of 15 in the last 39 rows): was that block added from one source, perhaps the studio batch? | No source available | Treated all rows the same; noted under "Could not verify" |
 | Q2 | Load | Adjoa | F-04 | Were the blank, `N/A` and `-1` rows placeholders for titles still to be chosen? | Not titles | Quarantined (ADR-001) |
 | Q3 | Load | Studio licensing desk | F-03 | Do you send IMDb ids rather than TMDb ids? | Yes, for at least one row | Quarantined; resolver planned (improvement) |
