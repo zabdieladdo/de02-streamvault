@@ -416,35 +416,62 @@ def window_differences(shortlist: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=DIFFERENCE_COLUMNS)
 
 
+CANDIDATES = ("all-years leader", "2000-onward leader", "robust candidate")
 DEAL_NOTE_COLUMNS = [
-    "collection_name", "n_on_list", "release_years", "median_roi", "list_median_roi", "relative_value",
+    "candidate", "collection_id", "collection_name", "n_on_list", "release_years", "bundle_rank",
+    "bundle_rank_2000_on", "rankable_2000_on", "median_roi", "list_median_roi", "relative_value",
     "weakest_title", "weakest_roi", "walkaway_ratio", "median_roi_2000_on", "straddles_2000",
     "thin_2000_on", "standalone_median_roi", "relative_to_standalone", "median_vote_count", "vote_rank",
 ]
 
 
-def deal_note_figures(bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi: float) -> pd.DataFrame:
-    """The figures for the strongest bundle, all as ratios: no price exists in the brief.
+def robust_candidate(bundles: pd.DataFrame) -> pd.DataFrame:
+    """The bundle rankable in both windows with the best worse-of-the-two ranks (tie: higher walk-away)."""
+    both = bundles[bundles["rankable"] & bundles["rankable_2000_on"]].copy()
+    both["worse_rank"] = both[["bundle_rank", "bundle_rank_2000_on"]].astype("int64").max(axis=1)
+    both = both.sort_values(["worse_rank", "walkaway_ratio", "collection_id"], ascending=[True, False, True])
+    return both.head(1)
 
-    relative_value is the bundle median multiple divided by the list median multiple (what drove the
-    view); walkaway_ratio is the weakest film multiple divided by the same list median.
+
+def deal_note_figures(bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi: float) -> pd.DataFrame:
+    """The figures for three candidates, all as ratios: no price exists in the brief.
+
+    The all-years leader and the 2000-onward leader are the top-ranked bundle in each window. The
+    robust candidate is the bundle that holds up best in both: the lowest worse-of-the-two ranks.
+    The same bundle can appear in more than one row. relative_value is the bundle median multiple
+    divided by the list median multiple (what drove the view); walkaway_ratio is the weakest film
+    multiple divided by the same list median.
     """
-    top = bundles[bundles["rankable"] & (bundles["bundle_rank"] == 1)].copy()
-    if top.empty:
-        return pd.DataFrame(columns=DEAL_NOTE_COLUMNS)
     stand = kpis[(kpis["window"] == "all years") & (kpis["group"] == "standalone")]["median_roi"]
     stand_median = float(stand.iloc[0]) if len(stand) else float("nan")
-    return pd.DataFrame(
-        {
-            "collection_name": top["collection_name"], "n_on_list": top["n_on_list"],
-            "release_years": _years(top["first_year"], top["last_year"]),
-            "median_roi": top["median_roi"], "list_median_roi": list_median_roi,
-            "relative_value": top["median_roi"] / list_median_roi,
-            "weakest_title": top["weakest_title"], "weakest_roi": top["weakest_roi"],
-            "walkaway_ratio": top["weakest_roi"] / list_median_roi,
-            "median_roi_2000_on": top["median_roi_2000_on"], "straddles_2000": top["straddles_2000"],
-            "thin_2000_on": top["thin_2000_on"], "standalone_median_roi": stand_median,
-            "relative_to_standalone": top["median_roi"] / stand_median,
-            "median_vote_count": top["median_vote_count"], "vote_rank": top["vote_rank"],
-        }
-    )[DEAL_NOTE_COLUMNS].reset_index(drop=True)
+    picks = {
+        "all-years leader": bundles[bundles["rankable"] & (bundles["bundle_rank"] == 1)],
+        "2000-onward leader": bundles[bundles["rankable_2000_on"] & (bundles["bundle_rank_2000_on"] == 1)],
+        "robust candidate": robust_candidate(bundles),
+    }
+    parts = []
+    for name, top in picks.items():  # the three candidate types
+        if top.empty:
+            continue
+        parts.append(
+            pd.DataFrame(
+                {
+                    "candidate": name, "collection_id": top["collection_id"],
+                    "collection_name": top["collection_name"], "n_on_list": top["n_on_list"],
+                    "release_years": _years(top["first_year"], top["last_year"]),
+                    "bundle_rank": top["bundle_rank"], "bundle_rank_2000_on": top["bundle_rank_2000_on"],
+                    "rankable_2000_on": top["rankable_2000_on"],
+                    "median_roi": top["median_roi"], "list_median_roi": list_median_roi,
+                    "relative_value": top["median_roi"] / list_median_roi,
+                    "weakest_title": top["weakest_title"], "weakest_roi": top["weakest_roi"],
+                    "walkaway_ratio": top["weakest_roi"] / list_median_roi,
+                    "median_roi_2000_on": top["median_roi_2000_on"], "straddles_2000": top["straddles_2000"],
+                    "thin_2000_on": top["thin_2000_on"], "standalone_median_roi": stand_median,
+                    "relative_to_standalone": top["median_roi"] / stand_median,
+                    "median_vote_count": top["median_vote_count"], "vote_rank": top["vote_rank"],
+                }
+            )
+        )
+    if not parts:
+        return pd.DataFrame(columns=DEAL_NOTE_COLUMNS)
+    return pd.concat(parts, ignore_index=True)[DEAL_NOTE_COLUMNS]

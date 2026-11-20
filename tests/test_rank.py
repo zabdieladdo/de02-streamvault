@@ -409,32 +409,62 @@ def deal_for(rows):
     f = flagged(rows)
     ref = rank.reference_values(f)
     kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
-    return rank.deal_note_figures(rank.build_bundles(f), kpis, ref["list_median_roi"]), ref
+    dn = rank.deal_note_figures(rank.build_bundles(f), kpis, ref["list_median_roi"])
+    return dn.set_index("candidate", drop=False), ref
 
 
 def test_deal_note_ratios_equal_hand_computed_values():
     # list: bundle 1 (4, 8, 12) and standalones 2, 4, 6 -> list median of 6 films is (4 + 6) / 2 = 5
-    rows = bundle_rows(1, [4, 8, 12], years=[1999, 2004, 2010]) + [
+    rows = bundle_rows(1, [4, 8, 12], years=[2001, 2004, 2010]) + [
         {"tmdb_id": 50, "title": "a", **money(2)}, {"tmdb_id": 51, "title": "b", **money(4)}, {"tmdb_id": 52, "title": "c", **money(6)}]
     dn, ref = deal_for(rows)
-    r = dn.iloc[0]
+    r = dn.loc["robust candidate"]
     assert ref["list_median_roi"] == 5
     assert r["median_roi"] == 8 and r["relative_value"] == 8 / 5
     assert r["weakest_roi"] == 4 and r["walkaway_ratio"] == 4 / 5 and r["weakest_title"] == "1-1"
     assert r["standalone_median_roi"] == 4 and r["relative_to_standalone"] == 2.0
-    assert r["n_on_list"] == 3 and r["release_years"] == "1999-2010"
-    assert r["median_roi_2000_on"] == 10 and r["straddles_2000"] and r["thin_2000_on"]  # two films from 2000 is thin
+    assert r["n_on_list"] == 3 and r["release_years"] == "2001-2010"
+    assert r["bundle_rank"] == 1 and r["bundle_rank_2000_on"] == 1 and r["rankable_2000_on"]
 
 
-def test_deal_note_is_the_top_ranked_bundle():
-    rows = bundle_rows(1, [2, 3, 4]) + bundle_rows(2, [8, 9, 10], base_id=10)
+def test_one_bundle_leading_both_windows_appears_in_all_three_rows():
+    dn, _ = deal_for(bundle_rows(1, [4, 8, 12], years=[2001, 2004, 2010]))
+    assert list(dn["candidate"]) == list(rank.CANDIDATES)
+    assert set(dn["collection_id"]) == {1}
+
+
+def test_the_candidates_can_be_three_different_rules_over_different_bundles():
+    f = window_fixture()
+    b = rank.build_bundles(f)
+    dn = rank.deal_note_figures(b, pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0).set_index("candidate")
+    assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
+    # both bundles have a worse-of-two rank of 2; bundle 2 wins on the higher walk-away (6 against 2)
+    assert dn.loc["robust candidate", "collection_id"] == 2
+    assert dn.loc["robust candidate", "walkaway_ratio"] == 6 / 5
+
+
+def test_robust_candidate_minimises_the_worse_of_the_two_ranks():
+    rows = (bundle_rows(1, [20, 20, 20], years=[1980, 1990, 2001], base_id=0)        # best overall, only one film from 2000
+            + bundle_rows(2, [9, 9, 9], years=[2001, 2004, 2008], base_id=10)        # rankable in both windows
+            + bundle_rows(3, [8, 8, 8], years=[2001, 2004, 2008], base_id=20)        # rankable in both windows, lower
+            + bundle_rows(4, [10, 10, 10], years=[1985, 2002, 2004], base_id=30))    # strong overall, only two films from 2000
+    b = rank.build_bundles(flagged(rows)).set_index("collection_id")
+    assert not b.loc[1, "rankable_2000_on"] and not b.loc[4, "rankable_2000_on"]
+    dn = rank.deal_note_figures(b.reset_index(), pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0).set_index("candidate")
+    assert dn.loc["robust candidate", "collection_id"] == 2
+    assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
+
+
+def test_no_bundle_rankable_in_both_windows_gives_no_robust_row():
+    rows = bundle_rows(1, [4, 8, 12], years=[1980, 1990, 2001])
     dn, _ = deal_for(rows)
-    assert len(dn) == 1 and dn.loc[0, "collection_name"] == "Collection 2"
+    assert list(dn["candidate"]) == ["all-years leader"]
 
 
 def test_deal_note_flags_a_thin_recent_figure():
     dn, _ = deal_for(bundle_rows(1, [2, 3, 4], years=[1995, 1999, 2003]))
-    assert dn.loc[0, "thin_2000_on"] and dn.loc[0, "straddles_2000"]
+    r = dn.loc["all-years leader"]
+    assert r["thin_2000_on"] and r["straddles_2000"] and not r["rankable_2000_on"]
 
 
 def test_no_rankable_bundle_gives_no_deal_note():

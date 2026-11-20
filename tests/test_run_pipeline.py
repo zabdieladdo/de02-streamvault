@@ -442,7 +442,7 @@ def test_stage6_summary_and_outputs(tmp_path, capsys):
     assert "Stage 6: rank and recommend" in text
     assert "franchise: Collection 1, Collection 2, Collection 3" in text
     assert "standalone: S0, S1, S2, S3, S4" in text and "audience pick: S7" in text
-    assert "deal note     Collection 1: 1.12" in text  # bundle median 9 over list median 8
+    assert "NO ROBUST CANDIDATE" in text  # these bundles have only two films from 2000
     assert "SHORTLIST SHORT (all years)" not in text and "note: openers are selected winners" in text
     for name in ("bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv",
                  "shortlist.csv", "deal_note.csv", "window_differences.csv", "checks_report.csv"):
@@ -450,7 +450,9 @@ def test_stage6_summary_and_outputs(tmp_path, capsys):
     assert record["shortlist_sizes"]["all years"] == {"franchise": 3, "standalone": 5, "audience pick": 1}
     assert set(record["shortlist_sizes"]) == {"all years", "2000 onward"}
     assert isinstance(record["shortlist_differs_between_windows"], list)
-    assert record["strongest_bundle"] == "Collection 1" and record["bundles_rankable"] == 4
+    assert record["strongest_bundle"] is None and record["no_robust_candidate"] is True
+    assert record["deal_note_candidates"] == {"all-years leader": "Collection 1"}
+    assert record["bundles_rankable"] == 4
     assert {"list_median_roi", "list_median_votes", "bundles_tested_middle", "talent_reliable",
             "relative_value"} <= set(record)
     assert "rank" in record["seconds"]
@@ -523,3 +525,49 @@ def test_stage6_says_nothing_when_the_windows_agree(tmp_path, capsys):
     run_pipeline._stage6(tables, record, tmp_path)
     assert "SHORTLIST DIFFERS" not in capsys.readouterr().out
     assert record["shortlist_differs_between_windows"] == []
+
+
+def _window_tables():
+    from tests.conftest import make_talent
+    from tests.test_rank import window_fixture
+    from pipeline import metrics
+
+    f = window_fixture()
+    return {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+            "report": pd.DataFrame(), "talent": make_talent([(100, 1, "A", "director")])}
+
+
+def test_stage6_names_the_robust_candidate_and_the_window_leaders(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_window_tables(), record, tmp_path)
+    text = capsys.readouterr().out
+    assert "deal note     robust candidate Collection 2:" in text
+    assert "ranks 2 all years, 1 from 2000" in text
+    assert "window leaders: all-years leader: Collection 1 | 2000-onward leader: Collection 2" in text
+    assert "NO ROBUST CANDIDATE" not in text
+    assert record["strongest_bundle"] == "Collection 2" and record["no_robust_candidate"] is False
+    assert record["deal_note_candidates"] == {
+        "all-years leader": "Collection 1", "2000-onward leader": "Collection 2", "robust candidate": "Collection 2"}
+    deal = pd.read_csv(tmp_path / "deal_note.csv")
+    assert list(deal["candidate"]) == ["all-years leader", "2000-onward leader", "robust candidate"]
+    assert {"bundle_rank", "bundle_rank_2000_on", "rankable_2000_on"} <= set(deal.columns)
+
+
+def test_stage6_continues_when_there_is_no_robust_candidate(tmp_path, capsys):
+    tables = _window_tables()
+    f = tables["films_clean"]
+    cid = f["collection_id"]
+    later = cid.eq(1).fillna(False) & (f["release_year"] > 2003).fillna(False)
+    tables["films_clean"] = f[~cid.eq(2).fillna(False) & ~later]  # bundle 1 keeps one film from 2000
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)  # does not raise: no robust candidate is not an error
+    lines = capsys.readouterr().out.splitlines()
+    assert "  NO ROBUST CANDIDATE" in lines
+    assert record["no_robust_candidate"] is True and record["strongest_bundle"] is None
+
+
+def test_c33_stops_the_run_after_writing_outputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_pipeline.rank, "robust_candidate", lambda bundles: bundles.iloc[0:0])
+    with pytest.raises(PipelineStopError, match="C-33 failed"):
+        run_pipeline._stage6(_window_tables(), {"seconds": {}, "checks_passed": 0, "checks_failed": 0}, tmp_path)
+    assert (tmp_path / "deal_note.csv").is_file() and (tmp_path / "bundles.csv").is_file()

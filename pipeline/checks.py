@@ -105,7 +105,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
 # are written). Every other check is recorded in checks_report.csv and the run continues.
-INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25", "C-28", "C-29", "C-30", "C-31")
+INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25", "C-28", "C-29", "C-30", "C-31", "C-33")
 
 
 def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
@@ -437,4 +437,14 @@ def check_rank_stage(
     ]
     add("C-32", "Every reliable person has enough titles and a high enough hit rate", len(bad) == 0,
         f"{len(reliable)} reliable; {len(bad)} below the thresholds")
+
+    robust = deal_note[deal_note["candidate"] == "robust candidate"]
+    both_windows = bundles["rankable"] & bundles["rankable_2000_on"]
+    if robust.empty:
+        ok, detail = not both_windows.any(), f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
+    else:
+        row = bundles[bundles["collection_id"] == robust["collection_id"].iloc[0]]
+        ok = bool(len(robust) == 1 and len(row) == 1 and both_windows[row.index].all())
+        detail = f"{robust['collection_name'].iloc[0]}: rankable in both windows: {ok}"
+    add("C-33", "The robust candidate is rankable in both windows", ok, detail)
     return pd.DataFrame(rows)

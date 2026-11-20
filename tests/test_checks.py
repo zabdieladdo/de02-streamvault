@@ -147,7 +147,7 @@ def _rank_report(**changes):
 
 def test_rank_checks_pass_on_good_input():
     report = _rank_report()
-    assert list(report.index) == ["C-26", "C-28", "C-29", "C-30", "C-31", "C-32"]
+    assert list(report.index) == ["C-26", "C-28", "C-29", "C-30", "C-31", "C-32", "C-33"]
     assert report["passed"].all()
     assert "3 franchise, 5 standalone, 1 audience pick" in report.loc["C-26", "detail"]
 
@@ -195,7 +195,7 @@ def test_only_the_integrity_checks_stop_the_run():
     report.loc[:, "passed"] = False
     for check_id in ("C-26", "C-32"):  # recorded, run continues
         c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
-    for check_id in ("C-28", "C-29", "C-30", "C-31"):
+    for check_id in ("C-28", "C-29", "C-30", "C-31", "C-33"):
         with pytest.raises(PipelineStopError, match=check_id):
             c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
 
@@ -212,3 +212,29 @@ def test_c26_checks_each_window_against_its_own_usable_count():
     assert not _rank_report_for({**t, "bundles": thin}).loc["C-26", "passed"]
     too_few_overall = t["bundles"].assign(n_roi_usable=1)  # now the all-years rows trip instead
     assert not _rank_report_for({**t, "bundles": too_few_overall}).loc["C-26", "passed"]
+
+
+def test_c33_passes_with_a_robust_candidate_and_with_none_when_none_exists():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    assert "robust candidate" in set(t["deal_note"]["candidate"])
+    assert _rank_report_for(t).loc["C-33", "passed"]
+    # no bundle is rankable from 2000 (the default fixture has two films each from 2000): nothing to find
+    none = _rank_report(); assert none.loc["C-33", "passed"] and "no robust candidate" in none.loc["C-33", "detail"]
+
+
+def test_c33_fails_when_the_robust_candidate_is_not_rankable_in_both_windows():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    broken = t["bundles"].assign(rankable_2000_on=False)  # the table now says no bundle ranks from 2000
+    assert not _rank_report_for({**t, "bundles": broken}).loc["C-33", "passed"]
+
+
+def test_c33_fails_when_a_robust_candidate_was_missed():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    no_robust = t["deal_note"][t["deal_note"]["candidate"] != "robust candidate"]
+    assert not _rank_report_for({**t, "deal_note": no_robust}).loc["C-33", "passed"]

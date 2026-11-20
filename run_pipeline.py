@@ -409,6 +409,9 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     n_trail = int(m["bundles where middle entries trail the opener"])
     n_passed, n_failed = int(report6["passed"].sum()), int((~report6["passed"]).sum())
 
+    robust = deal[deal["candidate"] == "robust candidate"]
+    leaders = deal[deal["candidate"] != "robust candidate"].set_index("candidate")["collection_name"]
+
     record.update(
         {
             "list_median_roi": round(ref["list_median_roi"], 4),
@@ -418,8 +421,10 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
             "talent_reliable": {k: int(v) for k, v in reliable.items()},
             "shortlist_sizes": sizes,
             "shortlist_differs_between_windows": differ,
-            "strongest_bundle": None if deal.empty else str(deal.loc[0, "collection_name"]),
-            "relative_value": None if deal.empty else round(float(deal.loc[0, "relative_value"]), 4),
+            "strongest_bundle": None if robust.empty else str(robust["collection_name"].iloc[0]),
+            "relative_value": None if robust.empty else round(float(robust["relative_value"].iloc[0]), 4),
+            "no_robust_candidate": bool(robust.empty),
+            "deal_note_candidates": {k: str(v) for k, v in deal.set_index("candidate")["collection_name"].items()},
             "checks_passed": record["checks_passed"] + n_passed,
             "checks_failed": record["checks_failed"] + n_failed,
         }
@@ -455,12 +460,17 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
                   f"{config.SHORTLIST_STANDALONE_N} standalone")
     if differ:
         print(f"  SHORTLIST DIFFERS BETWEEN WINDOWS: {', '.join(differ)}")
-    if deal.empty:
-        print("  deal note     no rankable bundle")
+    if robust.empty:
+        print("  NO ROBUST CANDIDATE")
+        print("  deal note     no bundle is rankable in both windows")
     else:
-        d = deal.iloc[0]
-        print(f"  deal note     {d['collection_name']}: {d['relative_value']:.2f}× list median per film "
-              f"({int(d['n_on_list'])} films); walk-away {d['walkaway_ratio']:.2f}× (weakest: {d['weakest_title']})")
+        d = robust.iloc[0]
+        print(f"  deal note     robust candidate {d['collection_name']}: {d['relative_value']:.2f}× list median "
+              f"per film ({int(d['n_on_list'])} films); walk-away {d['walkaway_ratio']:.2f}× "
+              f"(weakest: {d['weakest_title']}); ranks {int(d['bundle_rank'])} all years, "
+              f"{int(d['bundle_rank_2000_on'])} from 2000")
+    if leaders.ne(robust["collection_name"].iloc[0] if len(robust) else "").any():
+        print("                window leaders: " + " | ".join(f"{k}: {v}" for k, v in leaders.items()))
     print(f"  checks        {n_passed} passed, {n_failed} failed")
     print(f"  time          {seconds:.2f} s")
     checks.raise_if_integrity_failed(report6, "rank")  # after the outputs are on disk
