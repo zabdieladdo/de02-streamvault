@@ -378,6 +378,24 @@ def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> None:
     checks.raise_if_integrity_failed(report5, "measure")  # after the outputs are on disk
 
 
+STATUS_FILE = "run_status.txt"
+
+
+def _clear_old_outputs(out_dir: Path) -> None:
+    """Delete the CSV files and the status file from an earlier run, so a stopped run cannot show
+    stale results. Keeps run_log.jsonl and, for a full run, the limited/ folder."""
+    if out_dir.is_dir():
+        for path in [*out_dir.glob("*.csv"), out_dir / STATUS_FILE]:
+            path.unlink(missing_ok=True)
+
+
+def _write_status(out_dir: Path, stopped_at: str | None, stage: int) -> None:
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    text = "complete " + now if stopped_at is None else f"stopped at {stopped_at}, stage {stage}, {now}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / STATUS_FILE).write_text(text + chr(10), encoding="utf-8")
+
+
 def main(argv=None, session=None) -> int:
     """Run the pipeline. `session` lets tests pass a fake in place of the network."""
     args = _parse_args(argv)
@@ -388,19 +406,28 @@ def main(argv=None, session=None) -> int:
     out_dir = config.LIMITED_OUT_DIR if args.limit else config.OUT_DIR
     record: dict = {"seconds": {}, "stopped": None, "output_dir": _display_path(out_dir)}
     code = 0
+    stage, stopped_at = 0, None
+    _clear_old_outputs(out_dir)
     try:
+        stage = 1
         stage1 = _stage1(record, out_dir)
+        stage = 2
         stage2 = _stage2(stage1, args, session, key, record, out_dir)
+        stage = 3
         stage3 = _stage3(stage1, stage2, args, record, out_dir)
+        stage = 4
         stage4 = _stage4(stage3, record, out_dir)
+        stage = 5
         _stage5(stage4, args, record, out_dir)
     except PipelineStopError as exc:
         message = redact(str(exc), key)
         print(f"STOPPED: {message}")
         record["stopped"] = message
+        stopped_at = exc.check_id or "an error (see the message and run_log.jsonl)"
         code = 1
     if "input_sha256" in record:  # stage 1 got far enough to log
         load.append_run_log(record)
+    _write_status(out_dir, stopped_at, stage)
     return code
 
 

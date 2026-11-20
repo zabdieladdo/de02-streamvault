@@ -337,3 +337,66 @@ def test_c03g_failure_stops_the_run(env, capsys, monkeypatch):
     monkeypatch.setattr(run_pipeline.transform, "flatten_stage", losing_a_film)
     _stops_on(env, capsys, "C-03g", ("films.csv", "talent.csv", "quarantine.csv", "reconciliation.csv"))
     assert not (env.tmp_path / "out" / "films_clean.csv").exists()  # stage 4 never ran
+
+
+# --- no stale outputs, and a status line for every run ------------------------------
+
+def _break_c_roi(monkeypatch):
+    real = run_pipeline.clean.add_flags
+
+    def broken(films):
+        out = real(films)
+        out["roi"] = 3.0
+        return out
+
+    monkeypatch.setattr(run_pipeline.clean, "add_flags", broken)
+
+
+def test_successful_run_writes_complete_status(env):
+    assert run_pipeline.main([], session=fake()) == 0
+    text = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
+    assert text.startswith("complete 20") and text.count("\n") == 1
+
+
+def test_stopped_run_leaves_no_stale_outputs(env, monkeypatch, capsys):
+    out = env.tmp_path / "out"
+    assert run_pipeline.main([], session=fake()) == 0
+    assert (out / "kpis.csv").is_file()  # from the earlier, successful run
+
+    _break_c_roi(monkeypatch)
+    assert run_pipeline.main([], session=FakeSession()) == 1
+    assert not (out / "kpis.csv").exists()
+    assert not (out / "decision_impact.csv").exists()
+    assert (out / "films_clean.csv").is_file()  # written by this run before it stopped
+    status = (out / "run_status.txt").read_text(encoding="utf-8")
+    assert status.startswith("stopped at C-ROI, stage 4, 20")
+    assert len((out / "run_log.jsonl").read_text().splitlines()) == 2  # the log is kept
+
+
+def test_stop_without_a_check_still_writes_a_status(write_ids, fetch_env, monkeypatch):
+    monkeypatch.setattr(config, "INPUT_IDS", write_ids(["155"], header="id"))
+    monkeypatch.setattr(config, "OUT_DIR", fetch_env.tmp_path / "out")
+    assert run_pipeline.main([]) == 1
+    status = (fetch_env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
+    assert status.startswith("stopped at an error") and ", stage 1, " in status
+
+
+def test_limited_run_clears_only_its_own_folder(env):
+    out = env.tmp_path / "out"
+    run_pipeline.main([], session=fake())
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    (out / "limited" / "old.csv").write_text("stale", encoding="utf-8")
+    full = {p.name: p.read_bytes() for p in out.glob("*.csv")}
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    assert not (out / "limited" / "old.csv").exists()
+    assert {p.name: p.read_bytes() for p in out.glob("*.csv")} == full
+    assert (out / "run_status.txt").read_text().startswith("complete")
+    assert (out / "limited" / "run_status.txt").read_text().startswith("complete")
+
+
+def test_full_run_keeps_the_limited_folder(env):
+    out = env.tmp_path / "out"
+    run_pipeline.main(["--limit", "1"], session=FakeSession())
+    marker = {p.name: p.read_bytes() for p in (out / "limited").glob("*")}
+    run_pipeline.main([], session=fake())
+    assert {p.name for p in (out / "limited").glob("*")} == set(marker)

@@ -41,6 +41,8 @@ API responses are saved in `data/raw/` and reused for up to 180 days.
 
 ## When the run stops
 
+Check `out/run_status.txt` first. If it says stopped, the folder holds only what this run wrote before it stopped.
+
 The run prints `STOPPED:` followed by a message and ends with exit code 1. The message names the check that failed. Whatever was written to `out/` before the stop stays there, and `out/run_log.jsonl` records the reason. Details of every check are in `out/checks_report.csv`.
 
 **The run stops when:**
