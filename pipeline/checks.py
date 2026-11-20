@@ -105,7 +105,7 @@ def raise_if_conservation_failed(report: pd.DataFrame, check_ids=("C-03",)) -> N
 
 # Checks that guard whether the numbers are right. If one fails, the run stops (after the outputs
 # are written). Every other check is recorded in checks_report.csv and the run continues.
-INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25")
+INTEGRITY_CHECKS = ("C-ROI", "C-21", "C-22", "C-23", "C-25", "C-28", "C-29", "C-30", "C-31", "C-33")
 
 
 def raise_if_integrity_failed(report: pd.DataFrame, stage: str) -> None:
@@ -359,4 +359,100 @@ def check_measure_stage(
         same = kpis_rerun.to_csv(index=False) == both.to_csv(index=False)
         add("C-25", "A second computation gives identical KPI files", same,
             "identical" if same else "the two runs differ")
+    return pd.DataFrame(rows)
+
+
+def check_rank_stage(
+    bundles: pd.DataFrame,
+    films_clean: pd.DataFrame,
+    entry_positions: pd.DataFrame,
+    signal: pd.DataFrame,
+    shortlist: pd.DataFrame,
+    deal_note: pd.DataFrame,
+    talent: pd.DataFrame,
+    ref: dict,
+) -> pd.DataFrame:
+    """Checks C-26 and C-28 to C-32 for stage 6. C-28 to C-31 stop the run; C-26 and C-32 only record."""
+    from pipeline.rank import talent_join_rows
+
+    rows = []
+
+    def add(check_id, description, passed, detail):
+        rows.append(
+            {
+                "check_id": check_id, "description": description, "stage": "rank",
+                "passed": bool(passed), "detail": detail,
+            }
+        )
+
+    fr = shortlist[shortlist["list"] == "franchise"].astype({"collection_id": "int64"})
+    fr = fr.merge(bundles[["collection_id", "n_roi_usable", "n_roi_2000_on"]], on="collection_id", how="left")
+    usable = np.where(fr["window"] == "2000 onward", fr["n_roi_2000_on"], fr["n_roi_usable"])
+    too_small = int((usable < config.MIN_BUNDLE_FOR_RANKING).sum())
+    counts = shortlist.groupby(["window", "list"]).size()
+    text = "; ".join(
+        f"{w}: " + ", ".join(f"{int(counts.get((w, k), 0))} {k}" for k in ("franchise", "standalone", "audience pick"))
+        for w in ("all years", "2000 onward")
+    )
+    add("C-26", "Every shortlisted bundle has enough usable films in its window", too_small == 0,
+        f"{too_small} shortlisted bundles below {config.MIN_BUNDLE_FOR_RANKING} usable films; shortlist {text}")
+
+    n_franchise = int(films_clean["is_franchise"].astype(bool).sum())
+    n_bundled = int(bundles["n_on_list"].sum())
+    add("C-28", "Bundle sizes add up to the franchise films", n_bundled == n_franchise,
+        f"{n_bundled} films in bundles, {n_franchise} franchise films")
+
+    joined_rows, key_unique = talent_join_rows(talent, films_clean)
+    add("C-29", "Talent joins to films many-to-one and keeps every row",
+        joined_rows == len(talent) and key_unique,
+        f"{len(talent)} talent rows, {joined_rows} after the join; film key unique: {key_unique}")
+
+    rankable = bundles[bundles["rankable"]].set_index("collection_id")["n_roi_usable"]
+    by = entry_positions.groupby("collection_id")["position"].value_counts().unstack(fill_value=0)
+    by = by.reindex(columns=["opener", "middle", "latest"], fill_value=0).reindex(rankable.index, fill_value=0)
+    one_each = bool(((by["opener"] == 1) & (by["latest"] == 1)).all())
+    totals = bool((by.sum(axis=1) == rankable).all())
+    add("C-30", "Every tested bundle has one opener, one latest and all its usable films",
+        one_each and totals, f"{len(rankable)} bundles tested; one opener and one latest each: {one_each}; "
+        f"positions match usable films: {totals}")
+
+    list_median = ref["list_median_roi"]
+    list_median_2000 = ref["list_median_roi_2000_on"]
+    cols = ["median_roi", "weakest_roi", "relative_value", "walkaway_ratio",
+            "median_roi_2000_on", "weakest_roi_2000_on", "relative_value_2000_on", "walkaway_ratio_2000_on"]
+    figures = pd.concat([bundles[cols], deal_note[cols]], ignore_index=True).astype("float64")
+
+    def same(found: pd.Series, expected: pd.Series) -> pd.Series:
+        return pd.Series(np.isclose(found, expected, rtol=1e-9, atol=0, equal_nan=True), index=found.index)
+
+    ok = (
+        same(figures["relative_value"], figures["median_roi"] / list_median)
+        & same(figures["walkaway_ratio"], figures["weakest_roi"] / list_median)
+        & same(figures["relative_value_2000_on"], figures["median_roi_2000_on"] / list_median_2000)
+        & same(figures["walkaway_ratio_2000_on"], figures["weakest_roi_2000_on"] / list_median_2000)
+    )
+    n_bad = int((~ok).sum())
+    add("C-31", "Relative value and walk-away equal their defining ratios in both windows", n_bad == 0,
+        f"{len(figures)} rows checked against list medians {list_median:.4f} (all years) and "
+        f"{list_median_2000:.4f} (2000 onward); {n_bad} differ")
+
+    from pipeline.rank import SIGNAL_ABOVE
+
+    reliable = signal[signal["signal"] == SIGNAL_ABOVE]
+    bad = reliable[
+        (reliable["n_titles"] < config.RELIABLE_MIN_TITLES)
+        | (reliable["titles_above"] / reliable["n_titles"] < config.RELIABLE_HIT_RATE - 1e-9)
+    ]
+    add("C-32", "Everyone labelled consistently above on return has enough titles and a high enough hit rate",
+        len(bad) == 0, f"{len(reliable)} labelled consistently above; {len(bad)} below the thresholds")
+
+    robust = deal_note[deal_note["candidate"] == "robust candidate"]
+    both_windows = bundles["rankable"] & bundles["rankable_2000_on"]
+    if robust.empty:
+        ok, detail = not both_windows.any(), f"no robust candidate; {int(both_windows.sum())} bundles rankable in both windows"
+    else:
+        row = bundles[bundles["collection_id"] == robust["collection_id"].iloc[0]]
+        ok = bool(len(robust) == 1 and len(row) == 1 and both_windows[row.index].all())
+        detail = f"{robust['collection_name'].iloc[0]}: rankable in both windows: {ok}"
+    add("C-33", "The robust candidate is rankable in both windows", ok, detail)
     return pd.DataFrame(rows)

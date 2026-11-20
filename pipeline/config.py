@@ -64,3 +64,9 @@ MIN_GROUP_FOR_CONCLUSION = 5  # S14
 MIN_BUNDLE_FOR_RANKING = 3  # S14
 TOP_MONEY_REVIEW_N = 5  # largest budgets and revenues listed for a person to confirm
 SEQUEL_TITLE_PATTERN = r"\b(?:\d+|II|III|IV|V|VI|VII|VIII|IX|X)\b|\bPart\b|\bChapter\b|:"
+
+# --- Stage 6: rank and recommend ---------------------------------------------
+RELIABLE_MIN_TITLES = 3  # D20: independent titles needed before a person is called reliable
+RELIABLE_HIT_RATE = 2 / 3  # D20, S25: share of titles above the list-wide median multiple
+SHORTLIST_FRANCHISE_N = 3
+SHORTLIST_STANDALONE_N = 5

@@ -110,3 +110,144 @@ def test_fetch_check_conservation_and_stale_cache(fetch_env):
     assert not _passed(check_fetch_stage(run))["C-09"]
     run.results = run.results.iloc[1:]  # a lost result
     assert not _passed(check_fetch_stage(run))["C-06"]
+
+
+# --- stage 6 checks -----------------------------------------------------------------
+
+def _rank_tables(films=None):
+    from pipeline import metrics, rank
+    from tests.conftest import make_talent
+    from tests.test_rank import shortlist_fixture
+
+    f = shortlist_fixture() if films is None else films
+    ref = rank.reference_values(f)
+    bundles = rank.build_bundles(f)
+    ep, _ = rank.middle_entry_test(f, bundles)
+    talent = make_talent([(1, 7, "Ann", "director"), (2, 7, "Ann", "director"), (3, 7, "Ann", "director")])
+    signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
+    shortlist = rank.build_shortlists(bundles, f)
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"], ref["list_median_roi_2000_on"])
+    return dict(bundles=bundles, films_clean=f, entry_positions=ep, signal=signal, shortlist=shortlist,
+                deal_note=deal, talent=talent, ref=ref)
+
+
+def _rank_report_for(tables):
+    from pipeline import checks as c
+
+    return c.check_rank_stage(**tables).set_index("check_id")
+
+
+def _rank_report(**changes):
+    from pipeline import checks as c
+
+    tables = {**_rank_tables(), **changes}
+    return c.check_rank_stage(**tables).set_index("check_id")
+
+
+def test_rank_checks_pass_on_good_input():
+    report = _rank_report()
+    assert list(report.index) == ["C-26", "C-28", "C-29", "C-30", "C-31", "C-32", "C-33"]
+    assert report["passed"].all()
+    assert "3 franchise, 5 standalone, 1 audience pick" in report.loc["C-26", "detail"]
+
+
+def test_c26_fails_when_a_shortlisted_bundle_is_too_small():
+    t = _rank_tables()
+    small = t["bundles"].assign(n_roi_usable=2)
+    assert not _rank_report(bundles=small).loc["C-26", "passed"]
+
+
+def test_c28_fails_when_a_bundle_is_missing():
+    t = _rank_tables()
+    assert not _rank_report(bundles=t["bundles"].iloc[1:]).loc["C-28", "passed"]
+
+
+def test_c29_fails_on_a_repeated_film_id():
+    t = _rank_tables()
+    doubled = pd.concat([t["films_clean"], t["films_clean"].iloc[[0]]], ignore_index=True)
+    assert not _rank_report(films_clean=doubled).loc["C-29", "passed"]
+
+
+def test_c30_fails_when_an_opener_or_a_film_is_missing():
+    t = _rank_tables()
+    ep = t["entry_positions"]
+    assert not _rank_report(entry_positions=ep[ep["position"] != "opener"]).loc["C-30", "passed"]
+    assert not _rank_report(entry_positions=ep.iloc[1:]).loc["C-30", "passed"]
+
+
+def test_c31_fails_when_a_ratio_is_wrong():
+    t = _rank_tables()
+    assert not _rank_report(bundles=t["bundles"].assign(relative_value=99.0)).loc["C-31", "passed"]
+    assert not _rank_report(deal_note=t["deal_note"].assign(walkaway_ratio=0.0)).loc["C-31", "passed"]
+
+
+def test_c32_fails_when_a_consistently_above_person_has_too_few_titles():
+    t = _rank_tables()
+    forged = t["signal"].assign(signal="consistently above on return", n_titles=2, titles_above=2)
+    assert not _rank_report(signal=forged).loc["C-32", "passed"]
+
+
+def test_only_the_integrity_checks_stop_the_run():
+    from pipeline import checks as c
+
+    report = _rank_report().reset_index()
+    report.loc[:, "passed"] = False
+    for check_id in ("C-26", "C-32"):  # recorded, run continues
+        c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
+    for check_id in ("C-28", "C-29", "C-30", "C-31", "C-33"):
+        with pytest.raises(PipelineStopError, match=check_id):
+            c.raise_if_integrity_failed(report[report["check_id"] == check_id], "rank")
+
+
+def test_c26_checks_each_window_against_its_own_usable_count():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    in_2000 = t["shortlist"][(t["shortlist"]["window"] == "2000 onward") & (t["shortlist"]["list"] == "franchise")]
+    assert len(in_2000) == 2  # two bundles are rankable from 2000, so the 2000 window lists them
+    assert _rank_report_for(t).loc["C-26", "passed"]
+    # enough usable films over all years, but too few from 2000: only the 2000 rows may trip
+    thin = t["bundles"].assign(n_roi_2000_on=1)
+    assert not _rank_report_for({**t, "bundles": thin}).loc["C-26", "passed"]
+    too_few_overall = t["bundles"].assign(n_roi_usable=1)  # now the all-years rows trip instead
+    assert not _rank_report_for({**t, "bundles": too_few_overall}).loc["C-26", "passed"]
+
+
+def test_c33_passes_with_a_robust_candidate_and_with_none_when_none_exists():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    assert "robust candidate" in set(t["deal_note"]["candidate"])
+    assert _rank_report_for(t).loc["C-33", "passed"]
+    # no bundle is rankable from 2000 (the default fixture has two films each from 2000): nothing to find
+    none = _rank_report(); assert none.loc["C-33", "passed"] and "no robust candidate" in none.loc["C-33", "detail"]
+
+
+def test_c33_fails_when_the_robust_candidate_is_not_rankable_in_both_windows():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    broken = t["bundles"].assign(rankable_2000_on=False)  # the table now says no bundle ranks from 2000
+    assert not _rank_report_for({**t, "bundles": broken}).loc["C-33", "passed"]
+
+
+def test_c33_fails_when_a_robust_candidate_was_missed():
+    from tests.test_rank import window_fixture
+
+    t = _rank_tables(window_fixture())
+    no_robust = t["deal_note"][t["deal_note"]["candidate"] != "robust candidate"]
+    assert not _rank_report_for({**t, "deal_note": no_robust}).loc["C-33", "passed"]
+
+
+def test_c31_covers_the_2000_onward_ratios():
+    t = _rank_tables()
+    assert _rank_report_for(t).loc["C-31", "passed"]
+    wrong_bundle = t["bundles"].assign(relative_value_2000_on=99.0)
+    assert not _rank_report_for({**t, "bundles": wrong_bundle}).loc["C-31", "passed"]
+    wrong_walk = t["bundles"].assign(walkaway_ratio_2000_on=0.0)
+    assert not _rank_report_for({**t, "bundles": wrong_walk}).loc["C-31", "passed"]
+    wrong_deal = t["deal_note"].assign(walkaway_ratio_2000_on=0.0)
+    assert not _rank_report_for({**t, "deal_note": wrong_deal}).loc["C-31", "passed"]
+    wrong_median = {**t, "ref": {**t["ref"], "list_median_roi_2000_on": t["ref"]["list_median_roi_2000_on"] * 2}}
+    assert not _rank_report_for(wrong_median).loc["C-31", "passed"]

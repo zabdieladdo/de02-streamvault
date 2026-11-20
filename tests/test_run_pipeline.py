@@ -8,6 +8,7 @@ import requests
 
 import run_pipeline
 from pipeline import config
+from pipeline.errors import PipelineStopError
 from tests.conftest import NOT_FOUND_BODY, TEST_KEY, FakeResponse, FakeSession
 
 IDS = ["155", "", "N/A", "155", "9412887", "-1", "tt0468569", "603"]
@@ -142,6 +143,8 @@ CSV_OUTPUTS = (
     "ids_to_fetch.csv", "fetched_ids.csv", "quarantine.csv", "reconciliation.csv", "checks_report.csv",
     "films.csv", "talent.csv", "join_report.csv", "films_profile.csv",
     "films_clean.csv", "review_list.csv", "kpis.csv", "window_comparison.csv", "decision_impact.csv",
+    "bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv", "shortlist.csv",
+    "deal_note.csv", "window_differences.csv",
 )
 
 
@@ -207,7 +210,7 @@ def test_windows_disagree_prints_a_banner_and_the_run_continues(capsys, tmp_path
     ]
     films = make_films(rows).assign(imdb_id=pd.Series(pd.NA, dtype="string"))
     stage4 = {
-        "films_clean": clean.add_flags(films), "films": films, "report": pd.DataFrame(),
+        "films_clean": clean.add_flags(films), "films": films, "report": pd.DataFrame(), "talent": pd.DataFrame(),
         "quarantine": pd.DataFrame({"stage": [], "reason_code": [], "raw_value": []}),
     }
     record = {"seconds": {"clean": 0.0}, "checks_passed": 0, "checks_failed": 0}
@@ -415,3 +418,191 @@ def test_c21_failure_stops_the_run(env, capsys, monkeypatch):
     _stops_on(env, capsys, "C-21", STAGE5_FILES)
     status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
     assert status.startswith("stopped at C-21, stage 5, ")
+
+
+# --- stage 6: rank and recommend ----------------------------------------------------
+
+def _stage5_tables(tmp_path):
+    """Everything stage 6 reads, built from the hand-written shortlist fixture."""
+    from pipeline import metrics
+    from tests.conftest import make_talent
+    from tests.test_rank import shortlist_fixture
+
+    f = shortlist_fixture()
+    talent = make_talent([(1, 7, "Ann", "director"), (2, 7, "Ann", "director"), (3, 7, "Ann", "director"),
+                          (101, 8, "Bob", "lead_actor")])
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    return {"films_clean": f, "kpis": kpis, "report": pd.DataFrame(), "talent": talent}
+
+
+def test_stage6_summary_and_outputs(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_stage5_tables(tmp_path), record, tmp_path)
+    text = capsys.readouterr().out
+    assert "Stage 6: rank and recommend" in text
+    assert "franchise: Collection 1, Collection 2, Collection 3" in text
+    assert "standalone: S0, S1, S2, S3, S4" in text and "audience pick: S7" in text
+    assert "NO ROBUST CANDIDATE" in text  # these bundles have only two films from 2000
+    assert "SHORTLIST SHORT (all years)" not in text and "note: openers are selected winners" in text
+    for name in ("bundles.csv", "entry_positions.csv", "middle_entry_test.csv", "talent_signal.csv",
+                 "shortlist.csv", "deal_note.csv", "window_differences.csv", "checks_report.csv"):
+        assert (tmp_path / name).is_file(), name
+    assert record["shortlist_sizes"]["all years"] == {"franchise": 3, "standalone": 5, "audience pick": 1}
+    assert set(record["shortlist_sizes"]) == {"all years", "2000 onward"}
+    assert isinstance(record["shortlist_differs_between_windows"], list)
+    assert record["strongest_bundle"] is None and record["no_robust_candidate"] is True
+    assert record["deal_note_candidates"] == {"all-years leader": "Collection 1"}
+    assert record["bundles_rankable"] == 4
+    assert {"list_median_roi", "list_median_votes", "bundles_tested_middle", "talent_reliable",
+            "relative_value"} <= set(record)
+    assert "rank" in record["seconds"]
+
+
+def test_short_shortlist_is_announced_and_the_run_continues(env, capsys):
+    assert run_pipeline.main([], session=fake()) == 0  # these fixture films have no money: nothing to rank
+    text = capsys.readouterr().out
+    assert "SHORTLIST SHORT (all years): 0 of 3 franchise" in text
+    assert "SHORTLIST SHORT (2000 onward): 0 of 5 standalone" in text
+    assert text.rstrip().splitlines()[-1].startswith("Outputs written to ")
+    out = env.tmp_path / "out"
+    assert (out / "shortlist.csv").is_file() and (out / "deal_note.csv").is_file()
+    assert (out / "run_status.txt").read_text().startswith("complete")
+
+
+def test_c29_stops_stage6_after_writing_outputs_when_a_film_id_repeats(tmp_path):
+    tables = _stage5_tables(tmp_path)
+    f = tables["films_clean"]
+    tables["films_clean"] = pd.concat([f, f.iloc[[0]]], ignore_index=True)  # a film id twice
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    with pytest.raises(PipelineStopError, match="C-29 failed"):
+        run_pipeline._stage6(tables, record, tmp_path)
+    for name in ("bundles.csv", "talent_signal.csv", "shortlist.csv", "checks_report.csv"):
+        assert (tmp_path / name).is_file(), name  # outputs were written first
+    report = pd.read_csv(tmp_path / "checks_report.csv").set_index("check_id")
+    assert not report.loc["C-29", "passed"]
+
+
+def test_c29_stop_reaches_the_exit_code_and_status(env, capsys, monkeypatch):
+    monkeypatch.setattr(run_pipeline.rank, "talent_join_rows", lambda talent, films: (len(talent) + 1, False))
+    _stops_on(env, capsys, "C-29", ("bundles.csv", "talent_signal.csv", "shortlist.csv", "checks_report.csv"))
+    status = (env.tmp_path / "out" / "run_status.txt").read_text(encoding="utf-8")
+    assert status.startswith("stopped at C-29, stage 6, ")
+
+
+def test_stage6_prints_the_two_windows_and_where_they_differ(tmp_path, capsys):
+    from tests.test_rank import window_fixture
+    from tests.conftest import make_talent
+    from pipeline import metrics
+
+    f = window_fixture()
+    tables = {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+              "report": pd.DataFrame(), "talent": make_talent([(100, 1, "A", "director")])}
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)  # a difference is reported, not raised
+    text = capsys.readouterr().out
+    assert "all years: franchise: Collection 1, Collection 2" in text
+    assert "2000 onward: franchise: Collection 2, Collection 1" in text
+    lines = text.splitlines()
+    assert "  SHORTLIST DIFFERS BETWEEN WINDOWS: franchise, standalone" in lines  # on its own line
+    assert record["shortlist_differs_between_windows"] == ["franchise", "standalone"]
+    diff = pd.read_csv(tmp_path / "window_differences.csv")
+    assert dict(zip(diff["list"], diff["same"])) == {"franchise": False, "standalone": False, "audience pick": True}
+    sl = pd.read_csv(tmp_path / "shortlist.csv")
+    assert set(sl["window"]) == {"all years", "2000 onward"}
+
+
+def test_stage6_says_nothing_when_the_windows_agree(tmp_path, capsys):
+    from tests.conftest import make_talent
+    from tests.test_rank import money, bundle_rows, flagged
+    from pipeline import metrics
+
+    rows = bundle_rows(1, [2, 3, 4], years=[2001, 2004, 2008]) + [
+        {"tmdb_id": 50 + i, "title": f"s{i}", "year": 2010 + i, "votes": 100 + i, **money(9 - i)} for i in range(7)]
+    f = flagged(rows)
+    tables = {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+              "report": pd.DataFrame(), "talent": make_talent([(1, 1, "A", "director")])}
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)
+    assert "SHORTLIST DIFFERS" not in capsys.readouterr().out
+    assert record["shortlist_differs_between_windows"] == []
+
+
+def _window_tables():
+    from tests.conftest import make_talent
+    from tests.test_rank import window_fixture
+    from pipeline import metrics
+
+    f = window_fixture()
+    return {"films_clean": f, "kpis": pd.concat(metrics.window_kpis(f), ignore_index=True),
+            "report": pd.DataFrame(), "talent": make_talent([(100, 1, "A", "director")])}
+
+
+def test_stage6_names_the_robust_candidate_and_the_window_leaders(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_window_tables(), record, tmp_path)
+    text = capsys.readouterr().out
+    assert "deal note     robust candidate Collection 2:" in text
+    assert "ranks 2 all years, 1 from 2000" in text
+    assert "window leaders: all-years leader: Collection 1 | 2000-onward leader: Collection 2" in text
+    assert "NO ROBUST CANDIDATE" not in text
+    assert record["strongest_bundle"] == "Collection 2" and record["no_robust_candidate"] is False
+    assert record["deal_note_candidates"] == {
+        "all-years leader": "Collection 1", "2000-onward leader": "Collection 2", "robust candidate": "Collection 2"}
+    deal = pd.read_csv(tmp_path / "deal_note.csv")
+    assert list(deal["candidate"]) == ["all-years leader", "2000-onward leader", "robust candidate"]
+    assert {"bundle_rank", "bundle_rank_2000_on", "rankable_2000_on"} <= set(deal.columns)
+
+
+def test_stage6_continues_when_there_is_no_robust_candidate(tmp_path, capsys):
+    tables = _window_tables()
+    f = tables["films_clean"]
+    cid = f["collection_id"]
+    later = cid.eq(1).fillna(False) & (f["release_year"] > 2003).fillna(False)
+    tables["films_clean"] = f[~cid.eq(2).fillna(False) & ~later]  # bundle 1 keeps one film from 2000
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(tables, record, tmp_path)  # does not raise: no robust candidate is not an error
+    lines = capsys.readouterr().out.splitlines()
+    assert "  NO ROBUST CANDIDATE" in lines
+    assert record["no_robust_candidate"] is True and record["strongest_bundle"] is None
+
+
+def test_c33_stops_the_run_after_writing_outputs(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_pipeline.rank, "robust_candidate", lambda bundles: bundles.iloc[0:0])
+    with pytest.raises(PipelineStopError, match="C-33 failed"):
+        run_pipeline._stage6(_window_tables(), {"seconds": {}, "checks_passed": 0, "checks_failed": 0}, tmp_path)
+    assert (tmp_path / "deal_note.csv").is_file() and (tmp_path / "bundles.csv").is_file()
+
+
+def test_a_repeated_film_id_stops_stage_5_naming_c10(env, capsys, monkeypatch):
+    real = run_pipeline.clean.add_flags
+
+    def repeated_film(films):
+        out = real(films)
+        return pd.concat([out, out.iloc[[0]]], ignore_index=True)
+
+    monkeypatch.setattr(run_pipeline.clean, "add_flags", repeated_film)
+    assert run_pipeline.main([], session=fake()) == 1  # a clean stop, not a raw MergeError
+    text = capsys.readouterr().out
+    assert "STOPPED: C-10 failed" in text and "MergeError" not in text
+    out = env.tmp_path / "out"
+    assert (out / "films_clean.csv").is_file()  # stage 4 finished and wrote its outputs
+    assert not (out / "kpis.csv").exists()  # the stage 5 tables were never built
+    assert (out / "run_status.txt").read_text(encoding="utf-8").startswith("stopped at C-10, stage 5, ")
+    record = json.loads((out / "run_log.jsonl").read_text().splitlines()[-1])
+    assert "C-10" in record["stopped"]
+
+
+def test_stage6_prints_both_reference_medians_and_the_standalone_picks_above_them(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_window_tables(), record, tmp_path)
+    text = capsys.readouterr().out
+    ref = run_pipeline.rank.reference_values(_window_tables()["films_clean"])
+    assert f"list median multiple {ref['list_median_roi']:.2f}×" in text
+    assert f"from 2000 onward: {ref['list_median_roi_2000_on']:.2f}× ({ref['n_usable_2000_on']} films)" in text
+    line = next(x for x in text.splitlines() if "standalone picks above list median" in x)
+    assert line.startswith("  standalone picks above list median: all years ") and "| 2000 onward " in line
+    assert record["list_median_roi_2000_on"] == round(ref["list_median_roi_2000_on"], 4)
+    assert record["list_median_votes_2000_on"] == ref["list_median_votes_2000_on"]
+    assert set(record["standalone_picks_above_list_median"]) == {"all years", "2000 onward"}
+    k, n = record["standalone_picks_above_list_median"]["2000 onward"]
+    assert n == 5 and 0 <= k <= n

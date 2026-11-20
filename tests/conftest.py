@@ -95,6 +95,14 @@ def fetch_env(tmp_path, monkeypatch, no_sleep):
     return SimpleNamespace(raw=raw, key=TEST_KEY, tmp_path=tmp_path)
 
 
+def _release_date(r: dict):
+    """A date for a fixture row: the given date, else mid-year of its year, else missing."""
+    if "date" in r:
+        return pd.Timestamp(r["date"])
+    year = r.get("year", 2010)
+    return pd.NaT if pd.isna(year) else pd.Timestamp(f"{year}-06-01")
+
+
 def make_films(rows: list[dict]) -> pd.DataFrame:
     """A films table (stage 3 shape, the columns stages 4 and 5 read) from short hand-written rows.
 
@@ -110,12 +118,14 @@ def make_films(rows: list[dict]) -> pd.DataFrame:
                 "first_line_number": i + 1,
                 "title": r.get("title", f"Film {i}"),
                 "release_year": r.get("year", 2010),
+                "release_date": _release_date(r),
                 "status": r.get("status", "Released"),
                 "budget": r.get("budget", 1_000_000),
                 "revenue": r.get("revenue", 2_000_000),
                 "vote_count": r.get("votes", 1000),
                 "is_franchise": bool(franchise),
                 "collection_id": (franchise if franchise is not True else 100 + i) if franchise else pd.NA,
+                "collection_name": f"Collection {franchise if franchise is not True else 100 + i}" if franchise else pd.NA,
                 "adult": False,
                 "video": False,
             }
@@ -124,5 +134,18 @@ def make_films(rows: list[dict]) -> pd.DataFrame:
     for col in ("release_year", "budget", "revenue", "vote_count", "collection_id"):
         df[col] = df[col].astype("Int64")
     df["title"] = df["title"].astype("string")
+    df["collection_name"] = df["collection_name"].astype("string")
     df["status"] = df["status"].astype("string")
+    return df
+
+
+def make_talent(rows: list[tuple]) -> pd.DataFrame:
+    """A talent table from (tmdb_id, person_id, name, role) tuples."""
+    df = pd.DataFrame(rows, columns=["tmdb_id", "person_id", "name", "role"])
+    df["tmdb_id"] = df["tmdb_id"].astype("int64")
+    df["person_id"] = df["person_id"].astype("int64")
+    df["name"] = df["name"].astype("string")
+    df["role"] = df["role"].astype("string")
+    df["billing_rank"] = pd.array([pd.NA] * len(df), dtype="Int64")
+    df["cast_order"] = pd.array([pd.NA] * len(df), dtype="Int64")
     return df

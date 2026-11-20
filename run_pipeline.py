@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from pipeline import checks, clean, config, extract, fetch, load, metrics, transform, validate
+from pipeline import checks, clean, config, extract, fetch, load, metrics, rank, transform, validate
 from pipeline.errors import PipelineStopError
 from pipeline.redact import redact
 from pipeline.validate import REASON_ORDER
@@ -255,7 +255,8 @@ def _stage3(stage1: dict, stage2: dict, args, record: dict, out_dir: Path) -> No
     print(f"  checks       {n_passed} passed, {n_failed} failed")
     print(f"  time         {seconds:.2f} s")
     checks.raise_if_conservation_failed(report3, ("C-03g",))  # after the outputs are on disk
-    return {"films": films, "quarantine": quarantine, "reconciliation": reconciliation, "report": report}
+    return {"films": films, "talent": talent, "quarantine": quarantine,
+            "reconciliation": reconciliation, "report": report}
 
 
 def _num(value, fmt="{:.2f}") -> str:
@@ -316,10 +317,10 @@ def _stage4(stage3: dict, record: dict, out_dir: Path) -> dict:
     print(f"  checks            {n_passed} passed, {n_failed} failed")
     checks.raise_if_integrity_failed(report4, "clean")  # after the outputs are on disk
     return {"films_clean": films_clean, "report": report, "quarantine": stage3["quarantine"],
-            "films": stage3["films"]}
+            "films": stage3["films"], "talent": stage3["talent"]}
 
 
-def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> None:
+def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> dict:
     t0 = time.perf_counter()
     f = stage4["films_clean"]
     kpis_all, kpis_2000 = metrics.window_kpis(f)
@@ -370,12 +371,127 @@ def _stage5(stage4: dict, args, record: dict, out_dir: Path) -> None:
         print("  decisions     none changes the leader")
     print(f"  checks        {n_passed} passed, {n_failed} failed")
     print(f"  time          clean {record['seconds']['clean']:.2f} s | measure {seconds:.2f} s")
-    if args.limit:
-        print(f"Outputs written to {_display_path(out_dir)}/ "
-              f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
-    else:
-        print(f"Outputs written to {_display_path(out_dir)}/")
     checks.raise_if_integrity_failed(report5, "measure")  # after the outputs are on disk
+    return {"films_clean": f, "kpis": kpis, "report": report, "talent": stage4["talent"]}
+
+
+def _names(shortlist: pd.DataFrame, window: str, which: str) -> str:
+    pick = shortlist[(shortlist["window"] == window) & (shortlist["list"] == which)]
+    names = pick["name"].astype(str)
+    return ", ".join(names) if len(names) else "none"
+
+
+def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
+    t0 = time.perf_counter()
+    f, talent = stage5["films_clean"], stage5["talent"]
+    ref = rank.reference_values(f)
+    bundles = rank.build_bundles(f)
+    entry_positions, middle = rank.middle_entry_test(f, bundles)
+    signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
+    shortlist = rank.build_shortlists(bundles, f)
+    differences = rank.window_differences(shortlist)
+    deal = rank.deal_note_figures(
+        bundles, stage5["kpis"], ref["list_median_roi"], ref["list_median_roi_2000_on"]
+    )
+    report6 = checks.check_rank_stage(bundles, f, entry_positions, signal, shortlist, deal, talent, ref)
+    report = pd.concat([stage5["report"], report6], ignore_index=True)
+    load.write_rank_outputs(bundles, entry_positions, middle, signal, shortlist, deal, differences, report,
+                            out_dir=out_dir)
+    seconds = time.perf_counter() - t0
+
+    sizes = {
+        w: {k: int(((shortlist["window"] == w) & (shortlist["list"] == k)).sum()) for k in rank.SHORTLIST_LISTS}
+        for w in rank.WINDOWS
+    }  # two windows by three lists
+    differ = differences.loc[~differences["same"], "list"].tolist()
+    reliable = signal[signal["signal"] == rank.SIGNAL_ABOVE]["role"].value_counts()
+    promising = signal[signal["signal"] == rank.SIGNAL_PROMISING]["role"].value_counts()
+    m = middle.set_index("measure")["value"]
+    n_tested = int(m["bundles tested"])
+    n_trail = int(m["bundles where middle entries trail the opener"])
+    n_passed, n_failed = int(report6["passed"].sum()), int((~report6["passed"]).sum())
+
+    robust = deal[deal["candidate"] == "robust candidate"]
+    leaders = deal[deal["candidate"] != "robust candidate"].set_index("candidate")["collection_name"]
+
+    medians = {rank.WINDOW_ALL: ref["list_median_roi"], rank.WINDOW_2000: ref["list_median_roi_2000_on"]}
+    stand = shortlist[shortlist["list"] == "standalone"]
+    above = {
+        w: [int((stand.loc[stand["window"] == w, "multiple"] > medians[w]).sum()), int((stand["window"] == w).sum())]
+        for w in rank.WINDOWS
+    }  # standalone picks above their own window list median: [above, picks]
+
+    record.update(
+        {
+            "list_median_roi": round(ref["list_median_roi"], 4),
+            "list_median_votes": ref["list_median_votes"],
+            "list_median_roi_2000_on": round(ref["list_median_roi_2000_on"], 4),
+            "list_median_votes_2000_on": ref["list_median_votes_2000_on"],
+            "standalone_picks_above_list_median": above,
+            "bundles_rankable": int(bundles["rankable"].sum()),
+            "bundles_tested_middle": n_tested,
+            "talent_reliable": {k: int(v) for k, v in reliable.items()},
+            "shortlist_sizes": sizes,
+            "shortlist_differs_between_windows": differ,
+            "strongest_bundle": None if robust.empty else str(robust["collection_name"].iloc[0]),
+            "relative_value": None if robust.empty else round(float(robust["relative_value"].iloc[0]), 4),
+            "no_robust_candidate": bool(robust.empty),
+            "deal_note_candidates": {k: str(v) for k, v in deal.set_index("candidate")["collection_name"].items()},
+            "checks_passed": record["checks_passed"] + n_passed,
+            "checks_failed": record["checks_failed"] + n_failed,
+        }
+    )
+    record["seconds"]["rank"] = round(seconds, 4)
+
+    def count(counts, role):
+        return int(counts.get(role, 0))
+
+    print()
+    print("Stage 6: rank and recommend")
+    print(f"  reference     list median multiple {ref['list_median_roi']:.2f}× ({ref['n_usable']} films) | "
+          f"list median votes {ref['list_median_votes']:.0f}")
+    print(f"                from 2000 onward: {ref['list_median_roi_2000_on']:.2f}× "
+          f"({ref['n_usable_2000_on']} films) | votes {ref['list_median_votes_2000_on']:.0f}")
+    print(f"  bundles       {len(bundles)} collections; {int(bundles['rankable'].sum())} rankable "
+          f"({config.MIN_BUNDLE_FOR_RANKING}+ films); {int(bundles['straddles_2000'].sum())} straddle 2000; "
+          f"{int(bundles['thin_2000_on'].sum())} thin from 2000")
+    print(f"  middle test   {n_tested} bundles, {int(m['middle films tested'])} middle films: middle/opener "
+          f"median {_num(m['within-bundle median ratio, middle to opener'])}; {n_trail} of {n_tested} "
+          "bundles trail the opener")
+    print("                note: openers are selected winners (bias)")
+    print(f"  talent        directors: {count(reliable, 'director')} consistently above on return, "
+          f"{count(promising, 'director')} above (too little evidence) | lead actors: "
+          f"{count(reliable, 'lead_actor')} consistently above, {count(promising, 'lead_actor')} above "
+          "(too little evidence)")
+    for i, window in enumerate(rank.WINDOWS):  # the two windows
+        lead = "  shortlist     " if i == 0 else "                "
+        print(f"{lead}{window}: franchise: {_names(shortlist, window, 'franchise')}")
+        print(f"                {'':<{len('all years')}}  standalone: {_names(shortlist, window, 'standalone')}")
+        print(f"                {'':<{len('all years')}}  audience pick: {_names(shortlist, window, 'audience pick')}")
+        if sizes[window]["franchise"] < config.SHORTLIST_FRANCHISE_N:
+            print(f"  SHORTLIST SHORT ({window}): {sizes[window]['franchise']} of "
+                  f"{config.SHORTLIST_FRANCHISE_N} franchise")
+        if sizes[window]["standalone"] < config.SHORTLIST_STANDALONE_N:
+            print(f"  SHORTLIST SHORT ({window}): {sizes[window]['standalone']} of "
+                  f"{config.SHORTLIST_STANDALONE_N} standalone")
+    print("  standalone picks above list median: "
+          + " | ".join(f"{w} {k} of {n}" for w, (k, n) in above.items()))
+    if differ:
+        print(f"  SHORTLIST DIFFERS BETWEEN WINDOWS: {', '.join(differ)}")
+    if robust.empty:
+        print("  NO ROBUST CANDIDATE")
+        print("  deal note     no bundle is rankable in both windows")
+    else:
+        d = robust.iloc[0]
+        print(f"  deal note     robust candidate {d['collection_name']}: {d['relative_value']:.2f}× list median "
+              f"per film ({int(d['n_on_list'])} films); walk-away {d['walkaway_ratio']:.2f}× "
+              f"(weakest: {d['weakest_title']}); ranks {int(d['bundle_rank'])} all years, "
+              f"{int(d['bundle_rank_2000_on'])} from 2000")
+    if leaders.ne(robust["collection_name"].iloc[0] if len(robust) else "").any():
+        print("                window leaders: " + " | ".join(f"{k}: {v}" for k, v in leaders.items()))
+    print(f"  checks        {n_passed} passed, {n_failed} failed")
+    print(f"  time          {seconds:.2f} s")
+    checks.raise_if_integrity_failed(report6, "rank")  # after the outputs are on disk
 
 
 STATUS_FILE = "run_status.txt"
@@ -394,6 +510,17 @@ def _write_status(out_dir: Path, stopped_at: str | None, stage: int) -> None:
     text = "complete " + now if stopped_at is None else f"stopped at {stopped_at}, stage {stage}, {now}"
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / STATUS_FILE).write_text(text + chr(10), encoding="utf-8")
+
+
+def _print_outputs_line(out_dir: Path, args, stopped: bool) -> None:
+    """The last line of every run: where the outputs are, and whether the run was limited or stopped."""
+    if stopped:
+        print(f"Outputs written so far are in {_display_path(out_dir)}/ (see run_status.txt)")
+    elif args.limit:
+        print(f"Outputs written to {_display_path(out_dir)}/ "
+              f"(LIMITED RUN; full results in {_display_path(config.OUT_DIR)}/ unchanged)")
+    else:
+        print(f"Outputs written to {_display_path(out_dir)}/")
 
 
 def main(argv=None, session=None) -> int:
@@ -418,13 +545,16 @@ def main(argv=None, session=None) -> int:
         stage = 4
         stage4 = _stage4(stage3, record, out_dir)
         stage = 5
-        _stage5(stage4, args, record, out_dir)
+        stage5 = _stage5(stage4, args, record, out_dir)
+        stage = 6
+        _stage6(stage5, record, out_dir)
     except PipelineStopError as exc:
         message = redact(str(exc), key)
         print(f"STOPPED: {message}")
         record["stopped"] = message
         stopped_at = exc.check_id or "an error (see the message and run_log.jsonl)"
         code = 1
+    _print_outputs_line(out_dir, args, stopped=code == 1)
     if "input_sha256" in record:  # stage 1 got far enough to log
         load.append_run_log(record)
     _write_status(out_dir, stopped_at, stage)
