@@ -6,14 +6,23 @@ from pipeline import config
 
 
 def reference_values(films_clean: pd.DataFrame) -> dict:
-    """The two list-wide medians every relative figure is measured against (all years)."""
-    usable = films_clean["roi_usable"].astype(bool)
-    roi = films_clean.loc[usable, "roi"].astype("float64")
-    votes = films_clean["vote_count"].astype("float64")
+    """The list-wide medians every relative figure is measured against, for each window.
+
+    The plain keys are over all years; the `_2000_on` keys use only films released in 2000 or later.
+    """
+    def medians(films: pd.DataFrame) -> tuple[float, float, int]:
+        usable = films["roi_usable"].astype(bool)
+        roi = films.loc[usable, "roi"].astype("float64")
+        votes = films["vote_count"].astype("float64")
+        return (float(roi.median()) if len(roi) else float("nan"),
+                float(votes.median()) if len(votes) else float("nan"), int(usable.sum()))
+
+    roi_all, votes_all, n_all = medians(films_clean)
+    roi_2000, votes_2000, n_2000 = medians(films_clean[films_clean["in_window_2000"].astype(bool)])
     return {
-        "list_median_roi": float(roi.median()) if len(roi) else float("nan"),
-        "list_median_votes": float(votes.median()) if len(votes) else float("nan"),
-        "n_usable": int(usable.sum()),
+        "list_median_roi": roi_all, "list_median_votes": votes_all, "n_usable": n_all,
+        "list_median_roi_2000_on": roi_2000, "list_median_votes_2000_on": votes_2000,
+        "n_usable_2000_on": n_2000,
     }
 
 
@@ -22,7 +31,8 @@ BUNDLE_COLUMNS = [
     "aggregate_roi", "weakest_roi", "weakest_title", "median_vote_count", "first_year", "last_year",
     "straddles_2000", "n_2000_on", "n_roi_2000_on", "median_roi_2000_on", "thin_2000_on", "rankable",
     "bundle_rank", "rankable_2000_on", "bundle_rank_2000_on", "vote_rank", "relative_value",
-    "walkaway_ratio",
+    "walkaway_ratio", "weakest_roi_2000_on", "weakest_title_2000_on", "relative_value_2000_on",
+    "walkaway_ratio_2000_on",
 ]
 WINDOW_ALL, WINDOW_2000 = "all years", "2000 onward"
 WINDOWS = (WINDOW_ALL, WINDOW_2000)
@@ -43,7 +53,11 @@ def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
     g = f.groupby("collection_id")
     weakest = f[f["roi_u"].notna()]
     weakest = weakest.loc[weakest.groupby("collection_id")["roi_u"].idxmin()].set_index("collection_id")
-    recent = f[f["in_window_2000"].astype(bool)].groupby("collection_id")
+    recent_films = f[f["in_window_2000"].astype(bool)]
+    recent = recent_films.groupby("collection_id")
+    recent_usable = recent_films[recent_films["roi_u"].notna()]
+    weakest_recent = recent_usable.loc[recent_usable.groupby("collection_id")["roi_u"].idxmin()]
+    weakest_recent = weakest_recent.set_index("collection_id")
 
     b = pd.DataFrame(
         {
@@ -60,6 +74,8 @@ def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
             "last_year": g["year"].max(),
             "n_2000_on": recent.size(),
             "median_roi_2000_on": recent["roi_u"].median(),
+            "weakest_roi_2000_on": weakest_recent["roi_u"],
+            "weakest_title_2000_on": weakest_recent["title"].astype(object),
         }
     )
     b["n_2000_on"] = b["n_2000_on"].fillna(0).astype("int64")
@@ -77,6 +93,8 @@ def _bundle_table(films_clean: pd.DataFrame, ref: dict) -> pd.DataFrame:
     )
     b["relative_value"] = b["median_roi"] / ref["list_median_roi"]
     b["walkaway_ratio"] = b["weakest_roi"] / ref["list_median_roi"]
+    b["relative_value_2000_on"] = b["median_roi_2000_on"] / ref["list_median_roi_2000_on"]
+    b["walkaway_ratio_2000_on"] = b["weakest_roi_2000_on"] / ref["list_median_roi_2000_on"]
     b[["first_year", "last_year"]] = b[["first_year", "last_year"]].astype("Int64")
     b["collection_id"] = b["collection_id"].astype("int64")
     return b
@@ -198,6 +216,7 @@ def talent_signal(
 ) -> pd.DataFrame:
     """One row per person and role: how often their independent titles beat the list median multiple.
 
+    This is an all-years measure: it is not recomputed for films from 2000 onward.
     Titles are counted once per person: all of a person's films in one collection are one title.
     Directors and lead actors are separate rows.
     """
@@ -289,12 +308,19 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
     For "2000 onward" everything is recomputed from the films released in 2000 or later: bundles are
     ranked on those films alone, standalones come only from that window, and every reason says so.
     """
-    if window == WINDOW_2000:
+    in_2000 = window == WINDOW_2000
+    ref = reference_values(films_clean)
+    median_2000 = ref["list_median_roi_2000_on"]
+    if in_2000:
         films = films_clean[films_clean["in_window_2000"].astype(bool)]
-        bundles = _bundle_table(films, reference_values(films_clean))
+        bundles = _bundle_table(films, ref)
         scope, prefix = " from 2000 onward", "2000 onward: "
     else:
         window, films, scope, prefix = WINDOW_ALL, films_clean, "", "All years: "
+
+    def vs_median(multiple: pd.Series):
+        """In the 2000 window, a clause comparing a multiple with that window's list median."""
+        return "; " + _times(multiple / median_2000) + " the 2000-onward list median" if in_2000 else ""
     parts = []
 
     # franchise: rankable bundles, best median multiple first
@@ -306,10 +332,13 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         prefix + "Median " + _times(fr["median_roi"]) + " across " + fr["n_on_list"].astype(str)
         + " films" + scope + " on the list (" + _ordinal(fr["bundle_rank"]) + " of " + str(n_rankable)
     )
-    if window == WINDOW_2000:
+    if in_2000:
         reason = (
-            common + " bundles rankable from 2000 on); weakest film from 2000 onward " + fr["weakest_title"]
-            + " at " + _times(fr["weakest_roi"]) + "; " + _ordinal(fr["vote_rank"]) + " by audience votes among them."
+            common + " bundles rankable from 2000 on; " + _times(fr["median_roi"] / median_2000)
+            + " the 2000-onward list median of " + f"{median_2000:.1f}×" + "); weakest film from 2000 onward "
+            + fr["weakest_title"] + " at " + _times(fr["weakest_roi"]) + " ("
+            + _times(fr["weakest_roi"] / median_2000) + " that median); " + _ordinal(fr["vote_rank"])
+            + " by audience votes among them."
         )
     else:
         recent_text = np.where(
@@ -368,7 +397,7 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
         standalone_rows(
             top, "standalone",
             prefix + _times(top["roi"]) + " its budget (" + _ordinal(top["rank_by_multiple"]) + " of "
-            + str(n_stand) + " standalones" + scope + "); released " + top["release_years"] + "; "
+            + str(n_stand) + " standalones" + scope + vs_median(top["roi"]) + "); released " + top["release_years"] + "; "
             + _ordinal(top["vote_rank"]) + " of " + str(n_stand) + " by audience votes.",
         )
     )
@@ -381,7 +410,8 @@ def build_shortlist(bundles: pd.DataFrame, films_clean: pd.DataFrame, window: st
             rest, "audience pick",
             prefix + "Most-voted standalone" + scope + " not in the top " + top_label + ": " + _thousands(rest["votes"])
             + " votes (" + _ordinal(rest["vote_rank"]) + " of " + str(n_stand) + ") but " + _times(rest["roi"])
-            + " its budget (" + _ordinal(rest["rank_by_multiple"]) + " of " + str(n_stand) + ").",
+            + " its budget (" + _ordinal(rest["rank_by_multiple"]) + " of " + str(n_stand)
+            + vs_median(rest["roi"]) + ").",
         )
     )
 
@@ -425,8 +455,10 @@ CANDIDATES = ("all-years leader", "2000-onward leader", "robust candidate")
 DEAL_NOTE_COLUMNS = [
     "candidate", "collection_id", "collection_name", "n_on_list", "release_years", "bundle_rank",
     "bundle_rank_2000_on", "rankable_2000_on", "median_roi", "list_median_roi", "relative_value",
-    "weakest_title", "weakest_roi", "walkaway_ratio", "median_roi_2000_on", "straddles_2000",
-    "thin_2000_on", "standalone_median_roi", "relative_to_standalone", "median_vote_count", "vote_rank",
+    "weakest_title", "weakest_roi", "walkaway_ratio", "median_roi_2000_on", "list_median_roi_2000_on",
+    "relative_value_2000_on", "weakest_title_2000_on", "weakest_roi_2000_on", "walkaway_ratio_2000_on",
+    "straddles_2000", "thin_2000_on", "standalone_median_roi", "relative_to_standalone",
+    "median_vote_count", "vote_rank",
 ]
 
 
@@ -438,14 +470,17 @@ def robust_candidate(bundles: pd.DataFrame) -> pd.DataFrame:
     return both.head(1)
 
 
-def deal_note_figures(bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi: float) -> pd.DataFrame:
+def deal_note_figures(
+    bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi: float, list_median_roi_2000_on: float
+) -> pd.DataFrame:
     """The figures for three candidates, all as ratios: no price exists in the brief.
 
     The all-years leader and the 2000-onward leader are the top-ranked bundle in each window. The
     robust candidate is the bundle that holds up best in both: the lowest worse-of-the-two ranks.
-    The same bundle can appear in more than one row. relative_value is the bundle median multiple
-    divided by the list median multiple (what drove the view); walkaway_ratio is the weakest film
-    multiple divided by the same list median.
+    The same bundle can appear in more than one row. Every row carries both sets of ratios:
+    relative_value is the bundle median multiple divided by the list median multiple (what drove
+    the view) and walkaway_ratio is the weakest film multiple divided by the same list median, once
+    over all years and once over films from 2000 onward against the 2000-onward list median.
     """
     stand = kpis[(kpis["window"] == "all years") & (kpis["group"] == "standalone")]["median_roi"]
     stand_median = float(stand.iloc[0]) if len(stand) else float("nan")
@@ -470,8 +505,14 @@ def deal_note_figures(bundles: pd.DataFrame, kpis: pd.DataFrame, list_median_roi
                     "relative_value": top["median_roi"] / list_median_roi,
                     "weakest_title": top["weakest_title"], "weakest_roi": top["weakest_roi"],
                     "walkaway_ratio": top["weakest_roi"] / list_median_roi,
-                    "median_roi_2000_on": top["median_roi_2000_on"], "straddles_2000": top["straddles_2000"],
-                    "thin_2000_on": top["thin_2000_on"], "standalone_median_roi": stand_median,
+                    "median_roi_2000_on": top["median_roi_2000_on"],
+                    "list_median_roi_2000_on": list_median_roi_2000_on,
+                    "relative_value_2000_on": top["median_roi_2000_on"] / list_median_roi_2000_on,
+                    "weakest_title_2000_on": top["weakest_title_2000_on"],
+                    "weakest_roi_2000_on": top["weakest_roi_2000_on"],
+                    "walkaway_ratio_2000_on": top["weakest_roi_2000_on"] / list_median_roi_2000_on,
+                    "straddles_2000": top["straddles_2000"], "thin_2000_on": top["thin_2000_on"],
+                    "standalone_median_roi": stand_median,
                     "relative_to_standalone": top["median_roi"] / stand_median,
                     "median_vote_count": top["median_vote_count"], "vote_rank": top["vote_rank"],
                 }

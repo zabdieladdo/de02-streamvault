@@ -417,18 +417,24 @@ def check_rank_stage(
         f"positions match usable films: {totals}")
 
     list_median = ref["list_median_roi"]
-    figures = pd.concat(
-        [
-            bundles[["median_roi", "weakest_roi", "relative_value", "walkaway_ratio"]],
-            deal_note[["median_roi", "weakest_roi", "relative_value", "walkaway_ratio"]],
-        ],
-        ignore_index=True,
-    ).astype("float64")
-    rel_ok = np.isclose(figures["relative_value"], figures["median_roi"] / list_median, rtol=1e-9, atol=0, equal_nan=True)
-    walk_ok = np.isclose(figures["walkaway_ratio"], figures["weakest_roi"] / list_median, rtol=1e-9, atol=0, equal_nan=True)
-    n_bad = int((~(rel_ok & walk_ok)).sum())
-    add("C-31", "Relative value and walk-away equal their defining ratios", n_bad == 0,
-        f"{len(figures)} rows checked against list median {list_median:.4f}; {n_bad} differ")
+    list_median_2000 = ref["list_median_roi_2000_on"]
+    cols = ["median_roi", "weakest_roi", "relative_value", "walkaway_ratio",
+            "median_roi_2000_on", "weakest_roi_2000_on", "relative_value_2000_on", "walkaway_ratio_2000_on"]
+    figures = pd.concat([bundles[cols], deal_note[cols]], ignore_index=True).astype("float64")
+
+    def same(found: pd.Series, expected: pd.Series) -> pd.Series:
+        return pd.Series(np.isclose(found, expected, rtol=1e-9, atol=0, equal_nan=True), index=found.index)
+
+    ok = (
+        same(figures["relative_value"], figures["median_roi"] / list_median)
+        & same(figures["walkaway_ratio"], figures["weakest_roi"] / list_median)
+        & same(figures["relative_value_2000_on"], figures["median_roi_2000_on"] / list_median_2000)
+        & same(figures["walkaway_ratio_2000_on"], figures["weakest_roi_2000_on"] / list_median_2000)
+    )
+    n_bad = int((~ok).sum())
+    add("C-31", "Relative value and walk-away equal their defining ratios in both windows", n_bad == 0,
+        f"{len(figures)} rows checked against list medians {list_median:.4f} (all years) and "
+        f"{list_median_2000:.4f} (2000 onward); {n_bad} differ")
 
     from pipeline.rank import SIGNAL_ABOVE
 

@@ -127,7 +127,7 @@ def _rank_tables(films=None):
     signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
     shortlist = rank.build_shortlists(bundles, f)
     kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
-    deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"])
+    deal = rank.deal_note_figures(bundles, kpis, ref["list_median_roi"], ref["list_median_roi_2000_on"])
     return dict(bundles=bundles, films_clean=f, entry_positions=ep, signal=signal, shortlist=shortlist,
                 deal_note=deal, talent=talent, ref=ref)
 
@@ -238,3 +238,16 @@ def test_c33_fails_when_a_robust_candidate_was_missed():
     t = _rank_tables(window_fixture())
     no_robust = t["deal_note"][t["deal_note"]["candidate"] != "robust candidate"]
     assert not _rank_report_for({**t, "deal_note": no_robust}).loc["C-33", "passed"]
+
+
+def test_c31_covers_the_2000_onward_ratios():
+    t = _rank_tables()
+    assert _rank_report_for(t).loc["C-31", "passed"]
+    wrong_bundle = t["bundles"].assign(relative_value_2000_on=99.0)
+    assert not _rank_report_for({**t, "bundles": wrong_bundle}).loc["C-31", "passed"]
+    wrong_walk = t["bundles"].assign(walkaway_ratio_2000_on=0.0)
+    assert not _rank_report_for({**t, "bundles": wrong_walk}).loc["C-31", "passed"]
+    wrong_deal = t["deal_note"].assign(walkaway_ratio_2000_on=0.0)
+    assert not _rank_report_for({**t, "deal_note": wrong_deal}).loc["C-31", "passed"]
+    wrong_median = {**t, "ref": {**t["ref"], "list_median_roi_2000_on": t["ref"]["list_median_roi_2000_on"] * 2}}
+    assert not _rank_report_for(wrong_median).loc["C-31", "passed"]

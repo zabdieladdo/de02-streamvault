@@ -590,3 +590,19 @@ def test_a_repeated_film_id_stops_stage_5_naming_c10(env, capsys, monkeypatch):
     assert (out / "run_status.txt").read_text(encoding="utf-8").startswith("stopped at C-10, stage 5, ")
     record = json.loads((out / "run_log.jsonl").read_text().splitlines()[-1])
     assert "C-10" in record["stopped"]
+
+
+def test_stage6_prints_both_reference_medians_and_the_standalone_picks_above_them(tmp_path, capsys):
+    record = {"seconds": {}, "checks_passed": 0, "checks_failed": 0}
+    run_pipeline._stage6(_window_tables(), record, tmp_path)
+    text = capsys.readouterr().out
+    ref = run_pipeline.rank.reference_values(_window_tables()["films_clean"])
+    assert f"list median multiple {ref['list_median_roi']:.2f}×" in text
+    assert f"from 2000 onward: {ref['list_median_roi_2000_on']:.2f}× ({ref['n_usable_2000_on']} films)" in text
+    line = next(x for x in text.splitlines() if "standalone picks above list median" in x)
+    assert line.startswith("  standalone picks above list median: all years ") and "| 2000 onward " in line
+    assert record["list_median_roi_2000_on"] == round(ref["list_median_roi_2000_on"], 4)
+    assert record["list_median_votes_2000_on"] == ref["list_median_votes_2000_on"]
+    assert set(record["standalone_picks_above_list_median"]) == {"all years", "2000 onward"}
+    k, n = record["standalone_picks_above_list_median"]["2000 onward"]
+    assert n == 5 and 0 <= k <= n

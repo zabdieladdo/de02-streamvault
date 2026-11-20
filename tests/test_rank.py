@@ -409,7 +409,9 @@ def deal_for(rows):
     f = flagged(rows)
     ref = rank.reference_values(f)
     kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
-    dn = rank.deal_note_figures(rank.build_bundles(f), kpis, ref["list_median_roi"])
+    dn = rank.deal_note_figures(
+        rank.build_bundles(f), kpis, ref["list_median_roi"], ref["list_median_roi_2000_on"]
+    )
     return dn.set_index("candidate", drop=False), ref
 
 
@@ -436,7 +438,7 @@ def test_one_bundle_leading_both_windows_appears_in_all_three_rows():
 def test_the_candidates_can_be_three_different_rules_over_different_bundles():
     f = window_fixture()
     b = rank.build_bundles(f)
-    dn = rank.deal_note_figures(b, pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0).set_index("candidate")
+    dn = rank.deal_note_figures(b, pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0, 5.0).set_index("candidate")
     assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
     # both bundles have a worse-of-two rank of 2; bundle 2 wins on the higher walk-away (6 against 2)
     assert dn.loc["robust candidate", "collection_id"] == 2
@@ -450,7 +452,7 @@ def test_robust_candidate_minimises_the_worse_of_the_two_ranks():
             + bundle_rows(4, [10, 10, 10], years=[1985, 2002, 2004], base_id=30))    # strong overall, only two films from 2000
     b = rank.build_bundles(flagged(rows)).set_index("collection_id")
     assert not b.loc[1, "rankable_2000_on"] and not b.loc[4, "rankable_2000_on"]
-    dn = rank.deal_note_figures(b.reset_index(), pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0).set_index("candidate")
+    dn = rank.deal_note_figures(b.reset_index(), pd.DataFrame(columns=["window", "group", "median_roi"]), 5.0, 5.0).set_index("candidate")
     assert dn.loc["robust candidate", "collection_id"] == 2
     assert dn.loc["all-years leader", "collection_id"] == 1 and dn.loc["2000-onward leader", "collection_id"] == 2
 
@@ -538,7 +540,8 @@ def test_every_reason_states_its_window():
     assert starts[sl["window"] == "all years"].str.startswith("All years: ").all()
     assert starts[sl["window"] == "2000 onward"].str.startswith("2000 onward:").all()
     row = sl[(sl["window"] == "2000 onward") & (sl["list"] == "franchise")].iloc[0]
-    assert "films from 2000 onward on the list (1st of 2 bundles rankable from 2000 on)" in row["reason"]
+    assert "films from 2000 onward on the list (1st of 2 bundles rankable from 2000 on; " in row["reason"]
+    assert "the 2000-onward list median of " in row["reason"]
 
 
 def test_audience_pick_in_the_2000_window_is_outside_that_windows_top_five():
@@ -590,3 +593,97 @@ def test_signal_labels_name_their_measure_and_the_vote_hit_rate_stays():
     assert set(sig["signal"]) <= set(rank.SIGNAL_ORDER)
     assert not {"reliable", "reliable negative", "mixed", "promising, too little evidence"} & set(sig["signal"])
     assert {"hit_rate", "vote_hit_rate"} <= set(sig.columns)
+
+
+# --- each window against its own list median ----------------------------------------
+
+def reference_fixture():
+    """Hand-checkable: list median 5 over all years and 6 from 2000 onward (see the asserts)."""
+    rows = bundle_rows(1, [4, 8, 12], years=[1999, 2004, 2010])
+    rows += [
+        {"tmdb_id": 50, "title": "a", "year": 2002, **money(2)},
+        {"tmdb_id": 51, "title": "b", "year": 2005, **money(4)},
+        {"tmdb_id": 52, "title": "c", "year": 1990, **money(6)},
+    ]
+    return flagged(rows)
+
+
+def test_reference_values_for_both_windows():
+    ref = rank.reference_values(reference_fixture())
+    assert ref["list_median_roi"] == 5 and ref["n_usable"] == 6  # 2, 4, 4, 6, 8, 12
+    assert ref["list_median_roi_2000_on"] == 6 and ref["n_usable_2000_on"] == 4  # 2, 4, 8, 12
+    assert ref["list_median_votes"] == 1000 and ref["list_median_votes_2000_on"] == 1000
+
+
+def test_votes_reference_for_2000_uses_only_films_from_2000():
+    rows = [{"tmdb_id": 1, "title": "old", "year": 1980, "votes": 10, **money(2)},
+            {"tmdb_id": 2, "title": "new1", "year": 2005, "votes": 500, **money(2)},
+            {"tmdb_id": 3, "title": "new2", "year": 2006, "votes": 700, **money(2)}]
+    ref = rank.reference_values(flagged(rows))
+    assert ref["list_median_votes"] == 500 and ref["list_median_votes_2000_on"] == 600
+
+
+def test_bundle_ratios_for_films_from_2000_are_exact():
+    b = rank.build_bundles(reference_fixture()).set_index("collection_id").loc[1]
+    assert b["relative_value"] == 8 / 5 and b["walkaway_ratio"] == 4 / 5
+    assert b["median_roi_2000_on"] == 10 and b["weakest_roi_2000_on"] == 8 and b["weakest_title_2000_on"] == "1-2"
+    assert b["relative_value_2000_on"] == 10 / 6 and b["walkaway_ratio_2000_on"] == 8 / 6
+
+
+def test_2000_onward_ratios_are_missing_when_no_usable_film_is_from_2000():
+    rows = bundle_rows(1, [4, 8, 12], years=[1980, 1985, 1990]) + [{"tmdb_id": 50, "title": "a", "year": 2005, **money(3)}]
+    b = rank.build_bundles(flagged(rows)).set_index("collection_id").loc[1]
+    for col in ("median_roi_2000_on", "weakest_roi_2000_on", "weakest_title_2000_on", "relative_value_2000_on",
+                "walkaway_ratio_2000_on"):
+        assert pd.isna(b[col]), col
+    assert b["relative_value"] == 8 / 6  # list median of 3, 4, 8, 12 is 6; all-years figures are unaffected
+
+
+def test_an_unusable_film_from_2000_is_not_the_weakest():
+    rows = bundle_rows(1, [4, 8, 12], years=[2001, 2004, 2010])
+    rows[0] = {**rows[0], "budget": 0}
+    b = rank.build_bundles(flagged(rows)).set_index("collection_id").loc[1]
+    assert b["weakest_roi_2000_on"] == 8 and b["weakest_title_2000_on"] == "1-2"
+
+
+def test_2000_standalone_reasons_compare_with_the_2000_onward_median():
+    f = reference_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f, "2000 onward")
+    reasons = dict(zip(sl["name"], sl["reason"]))
+    assert reasons["b"] == ("2000 onward: 4.0× its budget (1st of 2 standalones from 2000 onward; "
+                            "0.7× the 2000-onward list median); released 2005; 1st of 2 by audience votes.")
+    assert "0.3× the 2000-onward list median" in reasons["a"]  # 2 against the median of 6
+
+
+def test_all_years_reasons_do_not_mention_the_2000_onward_median():
+    f = reference_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f)
+    assert not sl["reason"].str.contains("2000-onward list median").any()
+
+
+def test_2000_franchise_reason_compares_the_median_and_the_weakest_film():
+    f = window_fixture()
+    sl = rank.build_shortlist(rank.build_bundles(f), f, "2000 onward")
+    ref = rank.reference_values(f)
+    m = f"{ref['list_median_roi_2000_on']:.1f}×"
+    first = sl[sl["list"] == "franchise"].iloc[0]["reason"]
+    assert f"the 2000-onward list median of {m})" in first and "that median);" in first
+
+
+def test_every_deal_row_carries_both_sets_of_ratios():
+    from pipeline import metrics
+
+    f = reference_fixture()
+    ref = rank.reference_values(f)
+    kpis = pd.concat(metrics.window_kpis(f), ignore_index=True)
+    dn = rank.deal_note_figures(rank.build_bundles(f), kpis, ref["list_median_roi"], ref["list_median_roi_2000_on"])
+    assert len(dn) == 1 and dn.loc[0, "candidate"] == "all-years leader"  # only 2 films from 2000: not rankable there
+    r = dn.iloc[0]
+    assert r["list_median_roi"] == 5 and r["list_median_roi_2000_on"] == 6
+    assert r["relative_value"] == 8 / 5 and r["walkaway_ratio"] == 4 / 5
+    assert r["relative_value_2000_on"] == 10 / 6 and r["walkaway_ratio_2000_on"] == 8 / 6
+    assert r["weakest_title_2000_on"] == "1-2" and r["weakest_roi_2000_on"] == 8
+
+
+def test_talent_signal_says_it_is_an_all_years_measure():
+    assert "all-years measure" in rank.talent_signal.__doc__

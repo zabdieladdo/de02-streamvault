@@ -390,7 +390,9 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     signal = rank.talent_signal(talent, f, ref["list_median_roi"], ref["list_median_votes"])
     shortlist = rank.build_shortlists(bundles, f)
     differences = rank.window_differences(shortlist)
-    deal = rank.deal_note_figures(bundles, stage5["kpis"], ref["list_median_roi"])
+    deal = rank.deal_note_figures(
+        bundles, stage5["kpis"], ref["list_median_roi"], ref["list_median_roi_2000_on"]
+    )
     report6 = checks.check_rank_stage(bundles, f, entry_positions, signal, shortlist, deal, talent, ref)
     report = pd.concat([stage5["report"], report6], ignore_index=True)
     load.write_rank_outputs(bundles, entry_positions, middle, signal, shortlist, deal, differences, report,
@@ -412,10 +414,20 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     robust = deal[deal["candidate"] == "robust candidate"]
     leaders = deal[deal["candidate"] != "robust candidate"].set_index("candidate")["collection_name"]
 
+    medians = {rank.WINDOW_ALL: ref["list_median_roi"], rank.WINDOW_2000: ref["list_median_roi_2000_on"]}
+    stand = shortlist[shortlist["list"] == "standalone"]
+    above = {
+        w: [int((stand.loc[stand["window"] == w, "multiple"] > medians[w]).sum()), int((stand["window"] == w).sum())]
+        for w in rank.WINDOWS
+    }  # standalone picks above their own window list median: [above, picks]
+
     record.update(
         {
             "list_median_roi": round(ref["list_median_roi"], 4),
             "list_median_votes": ref["list_median_votes"],
+            "list_median_roi_2000_on": round(ref["list_median_roi_2000_on"], 4),
+            "list_median_votes_2000_on": ref["list_median_votes_2000_on"],
+            "standalone_picks_above_list_median": above,
             "bundles_rankable": int(bundles["rankable"].sum()),
             "bundles_tested_middle": n_tested,
             "talent_reliable": {k: int(v) for k, v in reliable.items()},
@@ -438,6 +450,8 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
     print("Stage 6: rank and recommend")
     print(f"  reference     list median multiple {ref['list_median_roi']:.2f}× ({ref['n_usable']} films) | "
           f"list median votes {ref['list_median_votes']:.0f}")
+    print(f"                from 2000 onward: {ref['list_median_roi_2000_on']:.2f}× "
+          f"({ref['n_usable_2000_on']} films) | votes {ref['list_median_votes_2000_on']:.0f}")
     print(f"  bundles       {len(bundles)} collections; {int(bundles['rankable'].sum())} rankable "
           f"({config.MIN_BUNDLE_FOR_RANKING}+ films); {int(bundles['straddles_2000'].sum())} straddle 2000; "
           f"{int(bundles['thin_2000_on'].sum())} thin from 2000")
@@ -460,6 +474,8 @@ def _stage6(stage5: dict, record: dict, out_dir: Path) -> None:
         if sizes[window]["standalone"] < config.SHORTLIST_STANDALONE_N:
             print(f"  SHORTLIST SHORT ({window}): {sizes[window]['standalone']} of "
                   f"{config.SHORTLIST_STANDALONE_N} standalone")
+    print("  standalone picks above list median: "
+          + " | ".join(f"{w} {k} of {n}" for w, (k, n) in above.items()))
     if differ:
         print(f"  SHORTLIST DIFFERS BETWEEN WINDOWS: {', '.join(differ)}")
     if robust.empty:
