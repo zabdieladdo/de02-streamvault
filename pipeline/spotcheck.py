@@ -435,6 +435,7 @@ def build_comparison(
 # --- does any difference move the recommendation? -------------------------------------------
 
 MONEY_FIELDS = ("budget", "revenue")
+STRUCTURE_FIELDS = ("release_date", "belongs_to_collection.id")  # window membership, franchise grouping
 IMPACT_CLASSES = ("source_changed", "parsing_error", "parsing_error_and_source_changed")
 SHORTLIST_KEY = ["window", "list", "rank", "name", "vote_rank"]
 
@@ -453,32 +454,89 @@ def _recommendation(films: pd.DataFrame) -> dict:
 
 
 def _with_value(films: pd.DataFrame, tmdb_id: int, column: str, fresh) -> pd.DataFrame:
-    """A copy of the films table with one film's value replaced by the fresh one."""
+    """A copy of the films table with one film's whole-number value replaced by the fresh one."""
     out = films.copy()
     out.loc[out["tmdb_id"] == tmdb_id, column] = int(float(fresh))
     return out
+
+
+def _with_release_date(films: pd.DataFrame, tmdb_id: int, fresh) -> pd.DataFrame:
+    """A copy with one film's release date, and the year the 2000-onward window reads, replaced."""
+    out = films.copy()
+    date = pd.to_datetime(str(fresh), format="%Y-%m-%d", errors="coerce")
+    mine = out["tmdb_id"] == tmdb_id
+    out.loc[mine, "release_date_raw"] = "" if str(fresh) in ("", "nan", "None") else str(fresh)
+    out.loc[mine, "release_date"] = date
+    out.loc[mine, "release_year"] = pd.NA if pd.isna(date) else date.year
+    return out
+
+
+def _with_collection(films: pd.DataFrame, tmdb_id: int, fresh) -> pd.DataFrame:
+    """A copy with one film moved into another collection, or out of any, so franchise status follows."""
+    out = films.copy()
+    mine = out["tmdb_id"] == tmdb_id
+    if str(fresh) in ("", "nan", "None"):
+        out.loc[mine, ["collection_id", "collection_name"]] = pd.NA
+        out.loc[mine, "is_franchise"] = False
+        return out
+    collection = int(float(fresh))
+    known = out.loc[out["collection_id"] == collection, "collection_name"].dropna()
+    out.loc[mine, "collection_id"] = collection
+    out.loc[mine, "collection_name"] = known.iloc[0] if len(known) else f"Collection {collection} (new)"
+    out.loc[mine, "is_franchise"] = True
+    return out
+
+
+def _apply_change(films: pd.DataFrame, tmdb_id: int, field: str, fresh) -> pd.DataFrame:
+    """The films table with one film's value for `field` replaced by the fresh one."""
+    if field == "release_date":
+        return _with_release_date(films, tmdb_id, fresh)
+    if field == "belongs_to_collection.id":
+        return _with_collection(films, tmdb_id, fresh)
+    return _with_value(films, tmdb_id, field, fresh)  # budget, revenue or vote_count
 
 
 def _number(x) -> str:
     return "n/a" if pd.isna(x) else f"{float(x):.2f}"
 
 
-def _describe(change: str, before: dict, after: dict, tmdb_id: int) -> tuple[bool, str]:
+def _bundle_text(before: dict, after: dict, collection) -> str:
+    """One collection's median and ranks before and after a change; blank if it is on neither list."""
+    a, b = before["bundles"].set_index("collection_id"), after["bundles"].set_index("collection_id")
+    cid = int(collection)
+    in_a, in_b = cid in a.index, cid in b.index
+    if not (in_a or in_b):
+        return ""
+    name = a.loc[cid, "collection_name"] if in_a else b.loc[cid, "collection_name"]
+
+    def get(frame, present, column):
+        return frame.loc[cid, column] if present else pd.NA
+
+    return (
+        f"bundle {name}: median {_number(get(a, in_a, 'median_roi'))} -> {_number(get(b, in_b, 'median_roi'))}, "
+        f"rank {get(a, in_a, 'bundle_rank')} -> {get(b, in_b, 'bundle_rank')} (2000 onward "
+        f"{get(a, in_a, 'bundle_rank_2000_on')} -> {get(b, in_b, 'bundle_rank_2000_on')})"
+    )
+
+
+def _describe(change: str, before: dict, after: dict, tmdb_id: int, field: str) -> tuple[bool, str]:
     """Whether the recommendation moved, and a plain sentence on what the change did."""
     film_before = before["flagged"].set_index("tmdb_id").loc[tmdb_id]
     film_after = after["flagged"].set_index("tmdb_id").loc[tmdb_id]
     robust_moved = before["robust"] != after["robust"]
     lists_moved = not before["shortlist"].equals(after["shortlist"])
     parts = [change, f"film multiple {_number(film_before['roi'])} -> {_number(film_after['roi'])}"]
-    collection = film_before["collection_id"]
-    if pd.notna(collection):
-        a = before["bundles"].set_index("collection_id").loc[int(collection)]
-        b = after["bundles"].set_index("collection_id").loc[int(collection)]
+    if field == "release_date":
+        was, now = bool(film_before["in_window_2000"]), bool(film_after["in_window_2000"])
         parts.append(
-            f"bundle median {_number(a['median_roi'])} -> {_number(b['median_roi'])}, "
-            f"rank {a['bundle_rank']} -> {b['bundle_rank']} (2000 onward {a['bundle_rank_2000_on']} -> "
-            f"{b['bundle_rank_2000_on']})"
+            "2000-onward window: " + ("film moves " + ("in" if now else "out") if was != now else "unchanged")
         )
+    if field == "belongs_to_collection.id":
+        was, now = bool(film_before["is_franchise"]), bool(film_after["is_franchise"])
+        status = f"{'yes' if was else 'no'} -> {'yes' if now else 'no'}" if was != now else "unchanged"
+        parts.append("franchise film: " + status)
+    involved = pd.unique(pd.Series([film_before["collection_id"], film_after["collection_id"]]).dropna())
+    parts += [text for text in (_bundle_text(before, after, c) for c in involved) if text]  # at most two bundles
     parts.append(
         f"robust candidate {before['robust']} -> {after['robust']}" if robust_moved else "robust candidate unchanged"
     )
@@ -489,29 +547,31 @@ def _describe(change: str, before: dict, after: dict, tmdb_id: int) -> tuple[boo
 def assess_impact(comparison: pd.DataFrame, films_clean: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     """Add `moves_recommendation` and `impact` to the comparison, and one overall answer.
 
-    Each budget or revenue difference (source_changed, parsing_error or both) is applied to a copy of
-    the films table, one at a time, and the bundles, shortlists and robust candidate are recomputed.
-    A changed vote count is applied the same way: it can only matter through a vote_rank. Every other
-    field does not enter any ranking. A loop over the few differences, not over films.
+    Each budget, revenue, release-date or collection difference (source_changed, parsing_error or
+    both) is applied to a copy of the films table, one at a time: a new release date can move a film
+    across 2000, a new collection can move a film into or out of a bundle. The bundles, shortlists and
+    robust candidate are then recomputed. A changed vote count is applied the same way and can only
+    matter through a vote rank. Every other field enters no ranking. A loop over the few differences,
+    not over films.
     """
     out = comparison.assign(moves_recommendation=False, impact="")
     differs = out["class"] != "match"
-    money = out[out["field"].isin(MONEY_FIELDS) & out["class"].isin(IMPACT_CLASSES)]
+    structural = out[out["field"].isin(MONEY_FIELDS + STRUCTURE_FIELDS) & out["class"].isin(IMPACT_CLASSES)]
     votes = out[(out["field"] == "vote_count") & differs & (out["class"] != "unverified")]
-    if money.empty and votes.empty:
+    if structural.empty and votes.empty:
         return out, {"moves": False, "what": "", "volatile_moves": False}
 
     films = films_clean.copy()
     before = _recommendation(films)
     moved: list[str] = []
 
-    differing = pd.concat([money, votes])
+    differing = pd.concat([structural, votes])
     for index, row in zip(differing.index, differing.to_dict("records")):  # the few differing fields
-        column = row["field"]
-        changed = _with_value(films, int(row["tmdb_id"]), column, row["fresh"])
+        field, tmdb_id = row["field"], int(row["tmdb_id"])
+        changed = _apply_change(films, tmdb_id, field, row["fresh"])
         after = _recommendation(changed)
-        change = f"{row['title']} {column} {row['raw']} -> {row['fresh']}"
-        moves, text = _describe(change, before, after, int(row["tmdb_id"]))
+        change = f"{row['title']} {field} {row['raw']} -> {row['fresh']}"
+        moves, text = _describe(change, before, after, tmdb_id, field)
         out.loc[index, ["moves_recommendation", "impact"]] = [moves, text]
         if moves:
             moved.append(text)

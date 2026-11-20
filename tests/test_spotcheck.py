@@ -486,7 +486,7 @@ def test_a_fresh_revenue_that_drops_the_robust_candidate_below_another_bundle_mo
     table, overall = assess(difference(101, "1-2", "revenue", 1_000_000, 9_200_000))
     row = table.iloc[0]
     assert row["moves_recommendation"] and "robust candidate Collection 1 -> Collection 2" in row["impact"]
-    assert "film multiple 9.20 -> 1.00" in row["impact"] and "bundle median 9.20 -> 9.00" in row["impact"]
+    assert "film multiple 9.20 -> 1.00" in row["impact"] and "bundle Collection 1: median 9.20 -> 9.00" in row["impact"]
     assert overall["moves"] and "Collection 1 -> Collection 2" in overall["what"]
 
 
@@ -494,7 +494,7 @@ def test_a_change_that_leaves_the_ranking_alone_does_not_move_it():
     table, overall = assess(difference(100, "1-1", "revenue", 11_000_000, 12_000_000))  # 12.0 down to 11.0
     row = table.iloc[0]
     assert not row["moves_recommendation"] and "robust candidate unchanged" in row["impact"]
-    assert "shortlists unchanged" in row["impact"] and "bundle median 9.20 -> 9.20" in row["impact"]
+    assert "shortlists unchanged" in row["impact"] and "bundle Collection 1: median 9.20 -> 9.20" in row["impact"]
     assert overall == {"moves": False, "what": "", "volatile_moves": False}
 
 
@@ -789,3 +789,98 @@ def test_the_run_log_line_goes_to_the_folder_given_not_to_the_default(pipeline_e
     assert default_log.read_bytes() == before  # the default folder's log is untouched
     assert json.loads((other / "run_log.jsonl").read_text(encoding="utf-8").splitlines()[-1])["kind"] == "spotcheck"
     assert (other / "spotcheck.csv").is_file() and (other / "spotcheck_summary.csv").is_file()
+
+
+# --- release dates and collections ---------------------------------------------------------------
+
+def window_films():
+    """A pre-2000 standalone with the best multiple, six later standalones, and one bundle from 2000."""
+    rows = [{"tmdb_id": 400, "title": "pre", "year": 1999, "votes": 100, **money(40)}]
+    rows += [
+        {"tmdb_id": 401 + i, "title": f"s{i}", "year": 2005 + i, "votes": 3000 - 100 * i, **money(20 - i)}
+        for i in range(6)
+    ]
+    rows += [{"tmdb_id": 410, "title": "tail", "year": 1995, "votes": 50, **money(1.2)}]  # least-voted, worst multiple
+    rows += [
+        {"tmdb_id": 420 + i, "title": f"1-{i + 1}", "franchise": 1, "year": 2001 + 3 * i, **money(r)}
+        for i, r in enumerate([4, 6, 8])
+    ]
+    return clean.add_flags(make_films(rows))
+
+
+def test_a_fresh_release_date_that_moves_a_shortlisted_film_across_2000_moves_the_recommendation():
+    table, overall = assess(difference(400, "pre", "release_date", "2001-06-01", "1999-06-01"), films=window_films())
+    row = table.iloc[0]
+    assert row["moves_recommendation"] and overall["moves"]
+    assert "2000-onward window: film moves in" in row["impact"] and "a shortlist changes" in row["impact"]
+    assert "pre release_date 1999-06-01 -> 2001-06-01" in row["impact"]
+
+
+def test_a_new_release_date_on_the_same_side_of_2000_changes_nothing():
+    table, overall = assess(difference(400, "pre", "release_date", "1998-01-01", "1999-06-01"), films=window_films())
+    assert not table.iloc[0]["moves_recommendation"] and "2000-onward window: unchanged" in table.iloc[0]["impact"]
+    assert overall["moves"] is False
+
+
+def test_crossing_2000_does_not_move_it_when_the_film_stays_off_every_list():
+    table, _ = assess(difference(410, "tail", "release_date", "2003-01-01", "1995-01-01"), films=window_films())
+    row = table.iloc[0]
+    assert "film moves in" in row["impact"] and not row["moves_recommendation"]
+
+
+def test_a_bundle_film_that_leaves_the_window_can_drop_its_bundle_from_the_2000_onward_ranking():
+    table, overall = assess(difference(421, "1-2", "release_date", "1999-03-01", "2004-06-01"), films=window_films())
+    row = table.iloc[0]
+    assert row["moves_recommendation"] and "2000-onward window: film moves out" in row["impact"]
+    assert "bundle Collection 1" in row["impact"] and "(2000 onward 1 -> <NA>)" in row["impact"]  # only 2 films left
+    assert overall["moves"]
+
+
+def test_a_release_date_that_becomes_missing_takes_the_film_out_of_the_window():
+    table, _ = assess(difference(401, "s0", "release_date", "", "2005-06-01"), films=window_films())
+    assert "2000-onward window: film moves out" in table.iloc[0]["impact"] and table.iloc[0]["moves_recommendation"]
+
+
+def test_a_fresh_collection_that_moves_a_standalone_into_a_bundle_moves_the_recommendation():
+    # the best standalone joins collection 1, so it leaves the standalone lists and changes the bundle
+    table, overall = assess(difference(400, "pre", "belongs_to_collection.id", 1, "", cls="source_changed"),
+                            films=window_films())
+    row = table.iloc[0]
+    assert row["moves_recommendation"] and overall["moves"]
+    assert "franchise film: no -> yes" in row["impact"]
+    assert "bundle Collection 1: median 6.00 -> 7.00" in row["impact"]  # 4, 6, 8 becomes 4, 6, 8, 40
+
+
+def test_a_film_that_leaves_its_collection_can_make_its_bundle_unrankable():
+    table, _ = assess(difference(421, "1-2", "belongs_to_collection.id", "", 1), films=window_films())
+    row = table.iloc[0]
+    assert row["moves_recommendation"] and "franchise film: yes -> no" in row["impact"]
+    assert "bundle Collection 1" in row["impact"] and "rank 1 -> <NA>" in row["impact"]
+
+
+def test_a_low_ranked_standalone_joining_a_bundle_does_not_move_the_recommendation():
+    # "tail" is on no list and has the fewest votes, so no rank or name on any shortlist changes
+    table, _ = assess(difference(410, "tail", "belongs_to_collection.id", 1, ""), films=window_films())
+    row = table.iloc[0]
+    assert not row["moves_recommendation"] and "franchise film: no -> yes" in row["impact"]
+
+
+def test_a_collection_the_list_does_not_know_yet_is_handled():
+    table, _ = assess(difference(400, "pre", "belongs_to_collection.id", 99, ""), films=window_films())
+    row = table.iloc[0]
+    assert "franchise film: no -> yes" in row["impact"] and "Collection 99 (new)" in row["impact"]
+
+
+def test_release_date_and_collection_matches_are_ignored():
+    rows = [difference(400, "pre", "release_date", "1999-06-01", "1999-06-01", cls="match"),
+            difference(400, "pre", "belongs_to_collection.id", "", "", cls="match")]
+    table, overall = assess(*rows, films=window_films())
+    assert not table["moves_recommendation"].any() and overall["moves"] is False
+
+
+def test_a_changed_date_or_collection_does_not_alter_the_films_passed_in():
+    films = window_films()
+    before = films.copy()
+    assess(difference(400, "pre", "release_date", "2001-06-01", "1999-06-01"),
+           difference(400, "pre", "belongs_to_collection.id", 1, ""), films=films)
+    pd.testing.assert_frame_equal(films, before)
